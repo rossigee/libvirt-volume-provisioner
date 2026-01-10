@@ -1,4 +1,4 @@
-//nolint:revive // Test package name is standard
+//nolint:revive
 package api
 
 import (

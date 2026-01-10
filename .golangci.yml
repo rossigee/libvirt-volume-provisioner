@@ -105,6 +105,7 @@ issues:
       linters:
         - gosec
         - noctx
+        - revive
         - wrapcheck
     - path: "mocks"
       linters:
