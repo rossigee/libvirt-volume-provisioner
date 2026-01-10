@@ -31,18 +31,26 @@ func NewClient() (*Client, error) {
 
 	accessKey := os.Getenv("MINIO_ACCESS_KEY")
 	if accessKey == "" {
-		return nil, fmt.Errorf("MINIO_ACCESS_KEY environment variable is required")
+		return nil, fmt.Errorf("MINIO_ACCESS_KEY environment variable is required (check /etc/default/libvirt-volume-provisioner)")
 	}
 
 	secretKey := os.Getenv("MINIO_SECRET_KEY")
 	if secretKey == "" {
-		return nil, fmt.Errorf("MINIO_SECRET_KEY environment variable is required")
+		return nil, fmt.Errorf("MINIO_SECRET_KEY environment variable is required (check /etc/default/libvirt-volume-provisioner)")
 	}
 
 	// Parse endpoint URL
 	u, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("invalid MINIO_ENDPOINT: %w", err)
+		return nil, fmt.Errorf("invalid MINIO_ENDPOINT '%s': %w (expected format: https://hostname:port)", endpoint, err)
+	}
+
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("invalid MINIO_ENDPOINT scheme '%s': must be http or https", u.Scheme)
+	}
+
+	if u.Host == "" {
+		return nil, fmt.Errorf("invalid MINIO_ENDPOINT '%s': missing hostname", endpoint)
 	}
 
 	// Create MinIO client
@@ -51,7 +59,7 @@ func NewClient() (*Client, error) {
 		Secure: u.Scheme == "https",
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create MinIO client: %w", err)
+		return nil, fmt.Errorf("failed to create MinIO client for %s: %w", u.Host, err)
 	}
 
 	return &Client{

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,9 +16,20 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/internal/jobs"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/lvm"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/minio"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
+	// Configure logrus
+	logrus.SetFormatter(&logrus.TextFormatter{
+		FullTimestamp: true,
+	})
+	logrus.SetLevel(logrus.InfoLevel)
+
+	// Configure Gin
+	gin.SetMode(gin.ReleaseMode)
+	gin.DefaultWriter = logrus.StandardLogger().Writer()
+
 	// Load configuration from environment
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -32,28 +42,33 @@ func main() {
 	}
 
 	// Initialize components
+	logrus.Info("Initializing MinIO client...")
 	minioClient, err := minio.NewClient()
 	if err != nil {
-		log.Fatalf("Failed to initialize MinIO client: %v", err)
+		logrus.WithError(err).Fatal("Failed to initialize MinIO client")
 	}
+	logrus.Info("MinIO client initialized successfully")
 
+	logrus.Info("Initializing LVM manager...")
 	lvmManager, err := lvm.NewManager()
 	if err != nil {
-		log.Fatalf("Failed to initialize LVM manager: %v", err)
+		logrus.WithError(err).Fatal("Failed to initialize LVM manager")
 	}
+	logrus.Info("LVM manager initialized successfully")
 
+	logrus.Info("Initializing authentication validator...")
 	authValidator, err := auth.NewValidator()
 	if err != nil {
-		log.Fatalf("Failed to initialize auth validator: %v", err)
+		logrus.WithError(err).Fatal("Failed to initialize auth validator")
 	}
+	logrus.Info("Authentication validator initialized successfully")
 
 	jobManager := jobs.NewManager(minioClient, lvmManager)
 
 	// Initialize Gin router
-	router := gin.Default()
+	router := gin.New()
 
 	// Add middleware
-	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
 	router.Use(authValidator.Middleware())
 
@@ -86,16 +101,25 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		log.Printf("Starting libvirt-volume-provisioner server on %s:%s", host, port)
 		if !authValidator.IsClientCALoaded() {
+			logrus.WithFields(logrus.Fields{
+				"host": host,
+				"port": port,
+				"mode": "development (HTTP - no client CA)",
+			}).Info("Starting libvirt-volume-provisioner server")
 			// Run HTTP server for development
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("Failed to start server: %v", err)
+				logrus.WithError(err).Fatal("Failed to start HTTP server")
 			}
 		} else {
+			logrus.WithFields(logrus.Fields{
+				"host": host,
+				"port": port,
+				"mode": "production (HTTPS - client CA configured)",
+			}).Info("Starting libvirt-volume-provisioner server")
 			// Run HTTPS server
 			if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("Failed to start server: %v", err)
+				logrus.WithError(err).Fatal("Failed to start HTTPS server")
 			}
 		}
 	}()
@@ -104,15 +128,15 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("Shutting down server...")
+	logrus.Info("Shutting down server...")
 
 	// Give outstanding requests 30 seconds to complete
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		logrus.WithError(err).Fatal("Server forced to shutdown")
 	}
 
-	log.Println("Server exited")
+	logrus.Info("Server exited gracefully")
 }
