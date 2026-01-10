@@ -3,10 +3,15 @@
 package lvm
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/rossigee/libvirt-volume-provisioner/internal/retry"
 )
 
 // ProgressUpdater interface for updating job progress
@@ -16,12 +21,25 @@ type ProgressUpdater interface {
 
 // Manager handles LVM operations
 type Manager struct {
-	vgName string
+	vgName      string
+	retryConfig retry.Config
 }
 
-// NewManager creates a new LVM manager
-func NewManager() (*Manager, error) {
-	vgName := "data" // Default volume group name
+// NewManager creates a new LVM manager with configurable volume group
+func NewManager(vgName string) (*Manager, error) {
+	// Validate volume group name (prevent path traversal)
+	if vgName == "" {
+		vgName = "data" // Default if not provided
+	}
+	if strings.ContainsAny(vgName, "/\\") {
+		return nil, fmt.Errorf("invalid volume group name '%s': must not contain path separators", vgName)
+	}
+
+	// Verify the volume group exists
+	cmd := exec.CommandContext(context.Background(), "vgs", vgName)
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("volume group '%s' does not exist or is not accessible: %w", vgName, err)
+	}
 
 	// Verify LVM commands are available
 	if _, err := exec.LookPath("lvcreate"); err != nil {
@@ -31,18 +49,69 @@ func NewManager() (*Manager, error) {
 		return nil, fmt.Errorf("qemu-img command not found: %w", err)
 	}
 
+	// Configure retry logic
+	retryConfig := parseLvmRetryConfig(
+		os.Getenv("LVM_RETRY_ATTEMPTS"),
+		os.Getenv("LVM_RETRY_BACKOFF_MS"),
+	)
+
 	return &Manager{
-		vgName: vgName,
+		vgName:      vgName,
+		retryConfig: retryConfig,
 	}, nil
 }
 
-// CreateVolume creates a new LVM volume
-func (m *Manager) CreateVolume(volumeName string, sizeGB int) error {
+// parseLvmRetryConfig parses retry configuration from environment variables
+func parseLvmRetryConfig(attemptsStr, backoffStr string) retry.Config {
+	// Default values for LVM (more conservative than MinIO)
+	maxAttempts := 2
+	delays := []time.Duration{100 * time.Millisecond, 1 * time.Second}
+
+	// Parse max attempts
+	if attemptsStr != "" {
+		if attempts, err := strconv.Atoi(attemptsStr); err == nil && attempts > 0 {
+			maxAttempts = attempts
+		}
+	}
+
+	// Parse backoff delays
+	if backoffStr != "" {
+		var parsedDelays []time.Duration
+		for _, delayStr := range strings.Split(backoffStr, ",") {
+			if ms, err := strconv.Atoi(strings.TrimSpace(delayStr)); err == nil && ms > 0 {
+				parsedDelays = append(parsedDelays, time.Duration(ms)*time.Millisecond)
+			}
+		}
+		if len(parsedDelays) > 0 {
+			delays = parsedDelays
+		}
+	}
+
+	return retry.Config{
+		MaxAttempts: maxAttempts,
+		Delays:      delays,
+	}
+}
+
+// CreateVolume creates a new LVM volume with exponential backoff retry
+func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB int) error {
 	// Check if volume already exists
 	if m.volumeExists(volumeName) {
 		return fmt.Errorf("volume %s already exists", volumeName)
 	}
 
+	// Wrap with retry logic
+	err := retry.WithRetry(ctx, m.retryConfig, func() error {
+		return m.createVolumeOnce(volumeName, sizeGB)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create volume %s after retries: %w", volumeName, err)
+	}
+	return nil
+}
+
+// createVolumeOnce performs a single LVM volume creation attempt
+func (m *Manager) createVolumeOnce(volumeName string, sizeGB int) error {
 	// Create LVM volume
 	//nolint:gosec,noctx // LVM command parameters are validated and controlled internally
 	cmd := exec.Command("lvcreate", "-L", fmt.Sprintf("%dG", sizeGB), "-n", volumeName, m.vgName)
@@ -54,8 +123,24 @@ func (m *Manager) CreateVolume(volumeName string, sizeGB int) error {
 	return nil
 }
 
-// PopulateVolume populates an LVM volume with image data
-func (m *Manager) PopulateVolume(imagePath, volumeName, imageType string, updater ProgressUpdater) error {
+// PopulateVolume populates an LVM volume with image data with exponential backoff retry
+func (m *Manager) PopulateVolume(
+	ctx context.Context,
+	imagePath, volumeName, imageType string,
+	updater ProgressUpdater,
+) error {
+	// Wrap with retry logic
+	err := retry.WithRetry(ctx, m.retryConfig, func() error {
+		return m.populateVolumeOnce(imagePath, volumeName, imageType, updater)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to populate volume %s after retries: %w", volumeName, err)
+	}
+	return nil
+}
+
+// populateVolumeOnce performs a single volume population attempt
+func (m *Manager) populateVolumeOnce(imagePath, volumeName, imageType string, updater ProgressUpdater) error {
 	// Get the device path for the LVM volume
 	devicePath := fmt.Sprintf("/dev/%s/%s", m.vgName, volumeName)
 

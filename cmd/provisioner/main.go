@@ -18,6 +18,7 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/internal/jobs"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/lvm"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/minio"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
 	"github.com/sirupsen/logrus"
 )
 
@@ -55,6 +56,11 @@ func main() {
 		host = "0.0.0.0"
 	}
 
+	dbPath := os.Getenv("DATABASE_PATH")
+	if dbPath == "" {
+		dbPath = "./provisioner.db"
+	}
+
 	// Initialize components
 	logrus.Info("Initializing MinIO client...")
 	minioClient, err := minio.NewClient()
@@ -64,7 +70,7 @@ func main() {
 	logrus.Info("MinIO client initialized successfully")
 
 	logrus.Info("Initializing LVM manager...")
-	lvmManager, err := lvm.NewManager()
+	lvmManager, err := lvm.NewManager("data")
 	if err != nil {
 		logrus.WithError(err).Fatal("Failed to initialize LVM manager")
 	}
@@ -77,7 +83,14 @@ func main() {
 	}
 	logrus.Info("Authentication validator initialized successfully")
 
-	jobManager := jobs.NewManager(minioClient, lvmManager)
+	logrus.Info("Initializing storage...")
+	store, err := storage.NewStore(dbPath)
+	if err != nil {
+		logrus.WithError(err).Fatal("Failed to initialize storage")
+	}
+	logrus.Info("Storage initialized successfully")
+
+	jobManager := jobs.NewManager(minioClient, lvmManager, store)
 
 	// Initialize Gin router
 	router := gin.New()

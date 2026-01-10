@@ -96,6 +96,11 @@ deb: build-linux
 	@echo "    useradd --system --shell /bin/false libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "fi" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "# Create database directory" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "mkdir -p /var/lib/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "chown libvirt-volume-provisioner:libvirt-volume-provisioner /var/lib/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "chmod 700 /var/lib/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "# Create environment file if it doesn't exist" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "if [ ! -f /etc/default/libvirt-volume-provisioner ]; then" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "    cat > /etc/default/libvirt-volume-provisioner << EOF" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
@@ -104,6 +109,16 @@ deb: build-linux
 	@echo "MINIO_ENDPOINT=https://minio.example.com" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "MINIO_ACCESS_KEY=your-access-key" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "MINIO_SECRET_KEY=your-secret-key" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "MINIO_RETRY_ATTEMPTS=3" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "MINIO_RETRY_BACKOFF_MS=100,1000,10000" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "# LVM configuration" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "LVM_VOLUME_GROUP=data" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "LVM_RETRY_ATTEMPTS=2" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "LVM_RETRY_BACKOFF_MS=100,1000" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "# Database configuration" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "DB_PATH=/var/lib/libvirt-volume-provisioner/jobs.db" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "EOF" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "    chmod 600 /etc/default/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "    chown libvirt-volume-provisioner:libvirt-volume-provisioner /etc/default/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst

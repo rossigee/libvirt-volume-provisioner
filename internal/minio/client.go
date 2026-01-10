@@ -9,10 +9,13 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/retry"
 	"github.com/sirupsen/logrus"
 )
 
@@ -24,6 +27,7 @@ type ProgressUpdater interface {
 // Client handles MinIO operations.
 type Client struct {
 	minioClient *minio.Client
+	retryConfig retry.Config
 }
 
 // NewClient creates a new MinIO client.
@@ -91,13 +95,69 @@ func NewClient() (*Client, error) {
 		return nil, fmt.Errorf("failed to create MinIO client for %s: %w", u.Host, err)
 	}
 
+	// Configure retry logic
+	retryConfig := parseRetryConfig(
+		os.Getenv("MINIO_RETRY_ATTEMPTS"),
+		os.Getenv("MINIO_RETRY_BACKOFF_MS"),
+	)
+
 	return &Client{
 		minioClient: minioClient,
+		retryConfig: retryConfig,
 	}, nil
 }
 
-// DownloadImage downloads an image from MinIO to a temporary file
+// parseRetryConfig parses retry configuration from environment variables
+func parseRetryConfig(attemptsStr, backoffStr string) retry.Config {
+	// Default values
+	maxAttempts := 3
+	delays := []time.Duration{100 * time.Millisecond, 1 * time.Second, 10 * time.Second}
+
+	// Parse max attempts
+	if attemptsStr != "" {
+		if attempts, err := strconv.Atoi(attemptsStr); err == nil && attempts > 0 {
+			maxAttempts = attempts
+		}
+	}
+
+	// Parse backoff delays
+	if backoffStr != "" {
+		var parsedDelays []time.Duration
+		for _, delayStr := range strings.Split(backoffStr, ",") {
+			if ms, err := strconv.Atoi(strings.TrimSpace(delayStr)); err == nil && ms > 0 {
+				parsedDelays = append(parsedDelays, time.Duration(ms)*time.Millisecond)
+			}
+		}
+		if len(parsedDelays) > 0 {
+			delays = parsedDelays
+		}
+	}
+
+	return retry.Config{
+		MaxAttempts: maxAttempts,
+		Delays:      delays,
+	}
+}
+
+// DownloadImage downloads an image from MinIO to a temporary file with exponential backoff retry
 func (c *Client) DownloadImage(ctx context.Context, imageURL string, updater ProgressUpdater) (string, error) {
+	var tempPath string
+
+	// Wrap download with retry logic
+	err := retry.WithRetry(ctx, c.retryConfig, func() error {
+		path, downloadErr := c.downloadImageOnce(ctx, imageURL, updater)
+		tempPath = path
+		return downloadErr
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to download image from %s after retries: %w", imageURL, err)
+	}
+
+	return tempPath, nil
+}
+
+// downloadImageOnce performs a single download attempt without retry logic
+func (c *Client) downloadImageOnce(ctx context.Context, imageURL string, updater ProgressUpdater) (string, error) {
 	// Parse the image URL to extract bucket and object
 	u, err := url.Parse(imageURL)
 	if err != nil {

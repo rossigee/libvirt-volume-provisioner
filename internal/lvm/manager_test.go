@@ -7,7 +7,33 @@ import (
 )
 
 func TestNewManager(t *testing.T) {
-	manager, err := NewManager()
+	manager, err := NewManager("data")
+
+	if err != nil {
+		// Skip test if LVM tools are not available in test environment
+		t.Skip("LVM tools not available in test environment:", err)
+	}
+
+	assert.NoError(t, err)
+	assert.NotNil(t, manager)
+	assert.Equal(t, "data", manager.vgName)
+}
+
+func TestNewManager_InvalidVGName(t *testing.T) {
+	// Test with path separator should be rejected
+	_, err := NewManager("data/volume")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path separators")
+
+	// Test with backslash should be rejected
+	_, err = NewManager("data\\volume")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path separators")
+}
+
+func TestNewManager_DefaultVG(t *testing.T) {
+	// Test with empty string should default to "data"
+	manager, err := NewManager("")
 
 	if err != nil {
 		// Skip test if LVM tools are not available in test environment
