@@ -18,6 +18,7 @@ go.work
 /bin/
 /dist/
 /build/
+/deb-build/
 /tmp/
 
 # Project binaries
