@@ -121,22 +121,23 @@ func (v *Validator) Middleware() gin.HandlerFunc {
 	}
 }
 
-// validateAPIToken validates API token from Authorization header
+// validateAPIToken validates API token from Authorization or X-API-Token headers
 func (v *Validator) validateAPIToken(c *gin.Context) bool {
 	authHeader := c.GetHeader("Authorization")
-	if authHeader == "" {
-		return false
-	}
 
-	// Check for Bearer token
-	if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+	// Check for Bearer token in Authorization header
+	if authHeader != "" && len(authHeader) > 7 && authHeader[:7] == "Bearer " {
 		token := authHeader[7:]
 		return v.apiTokens[token]
 	}
 
 	// Check for X-API-Token header
 	token := c.GetHeader("X-API-Token")
-	return v.apiTokens[token]
+	if token != "" {
+		return v.apiTokens[token]
+	}
+
+	return false
 }
 
 // GetClientCAs returns the client CA certificate pool

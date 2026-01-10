@@ -31,12 +31,20 @@ func NewClient() (*Client, error) {
 
 	accessKey := os.Getenv("MINIO_ACCESS_KEY")
 	if accessKey == "" {
-		return nil, fmt.Errorf("MINIO_ACCESS_KEY environment variable is required (check /etc/default/libvirt-volume-provisioner)")
+		// Also check for AWS/MinIO standard variable name
+		accessKey = os.Getenv("MINIO_ACCESS_KEY_ID")
+	}
+	if accessKey == "" {
+		return nil, fmt.Errorf("MINIO_ACCESS_KEY or MINIO_ACCESS_KEY_ID environment variable is required (check /etc/default/libvirt-volume-provisioner)")
 	}
 
 	secretKey := os.Getenv("MINIO_SECRET_KEY")
 	if secretKey == "" {
-		return nil, fmt.Errorf("MINIO_SECRET_KEY environment variable is required (check /etc/default/libvirt-volume-provisioner)")
+		// Also check for AWS/MinIO standard variable name
+		secretKey = os.Getenv("MINIO_SECRET_ACCESS_KEY")
+	}
+	if secretKey == "" {
+		return nil, fmt.Errorf("MINIO_SECRET_KEY or MINIO_SECRET_ACCESS_KEY environment variable is required (check /etc/default/libvirt-volume-provisioner)")
 	}
 
 	// Parse endpoint URL

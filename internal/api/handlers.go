@@ -5,17 +5,24 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rossigee/libvirt-volume-provisioner/internal/jobs"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 )
 
+// JobManager interface for job operations
+type JobManager interface {
+	StartJob(req types.ProvisionRequest) (string, error)
+	GetJobStatus(jobID string) (*types.StatusResponse, error)
+	CancelJob(jobID string) error
+	GetActiveJobs() int
+}
+
 // Handler handles HTTP API requests
 type Handler struct {
-	jobManager *jobs.Manager
+	jobManager JobManager
 }
 
 // NewHandler creates a new API handler
-func NewHandler(jobManager *jobs.Manager) *Handler {
+func NewHandler(jobManager JobManager) *Handler {
 	return &Handler{
 		jobManager: jobManager,
 	}
