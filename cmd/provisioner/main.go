@@ -64,25 +64,39 @@ func main() {
 	api.SetupRoutes(router, apiHandler)
 
 	// Create HTTP server
-	srv := &http.Server{
-		Addr:    fmt.Sprintf("%s:%s", host, port),
-		Handler: router,
-		TLSConfig: &tls.Config{
-			ClientAuth: tls.RequireAndVerifyClientCert,
-			ClientCAs:  authValidator.GetClientCAs(),
-			MinVersion: tls.VersionTLS12,
-		},
-		ReadTimeout:       15 * time.Second,
-		ReadHeaderTimeout: 15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+	var srv *http.Server
+	if !authValidator.IsClientCALoaded() {
+		// Run HTTP server for development when no client CA is configured
+		srv = &http.Server{
+			Addr:    fmt.Sprintf("%s:%s", host, port),
+			Handler: router,
+		}
+	} else {
+		// Run HTTPS server when client CA is configured
+		srv = &http.Server{
+			Addr:    fmt.Sprintf("%s:%s", host, port),
+			Handler: router,
+			TLSConfig: &tls.Config{
+				ClientAuth: tls.RequireAndVerifyClientCert,
+				ClientCAs:  authValidator.GetClientCAs(),
+				MinVersion: tls.VersionTLS12,
+			},
+		}
 	}
 
 	// Start server in a goroutine
 	go func() {
 		log.Printf("Starting libvirt-volume-provisioner server on %s:%s", host, port)
-		if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Failed to start server: %v", err)
+		if !authValidator.IsClientCALoaded() {
+			// Run HTTP server for development
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Failed to start server: %v", err)
+			}
+		} else {
+			// Run HTTPS server
+			if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Failed to start server: %v", err)
+			}
 		}
 	}()
 

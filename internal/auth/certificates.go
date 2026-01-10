@@ -13,8 +13,9 @@ import (
 
 // Validator handles authentication validation
 type Validator struct {
-	clientCAs *x509.CertPool
-	apiTokens map[string]bool // Simple token validation
+	clientCAs      *x509.CertPool
+	clientCALoaded bool            // Whether client CA certificates were loaded
+	apiTokens      map[string]bool // Simple token validation
 }
 
 // NewValidator creates a new authentication validator
@@ -46,6 +47,7 @@ func (v *Validator) loadClientCAs() error {
 
 	if _, err := os.Stat(caCertPath); os.IsNotExist(err) {
 		// For development, allow unauthenticated access
+		v.clientCALoaded = false
 		return nil
 	}
 
@@ -58,6 +60,7 @@ func (v *Validator) loadClientCAs() error {
 		return fmt.Errorf("failed to parse CA cert")
 	}
 
+	v.clientCALoaded = true
 	return nil
 }
 
@@ -139,4 +142,9 @@ func (v *Validator) validateAPIToken(c *gin.Context) bool {
 // GetClientCAs returns the client CA certificate pool
 func (v *Validator) GetClientCAs() *x509.CertPool {
 	return v.clientCAs
+}
+
+// IsClientCALoaded returns whether client CA certificates were loaded
+func (v *Validator) IsClientCALoaded() bool {
+	return v.clientCALoaded
 }

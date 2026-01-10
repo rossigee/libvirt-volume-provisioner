@@ -79,7 +79,7 @@ deb: build-linux
 	@echo "Type=simple" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
 	@echo "User=libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
 	@echo "Group=libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "EnvironmentFile=/etc/libvirt-volume-provisioner/env" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
+	@echo "EnvironmentFile=/etc/default/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
 	@echo "ExecStart=/usr/bin/$(BINARY_NAME)" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
 	@echo "Restart=always" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
 	@echo "RestartSec=5" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
@@ -97,16 +97,16 @@ deb: build-linux
 	@echo "fi" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "# Create environment file if it doesn't exist" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "if [ ! -f /etc/libvirt-volume-provisioner/env ]; then" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "    cat > /etc/libvirt-volume-provisioner/env << EOF" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "if [ ! -f /etc/default/libvirt-volume-provisioner ]; then" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "    cat > /etc/default/libvirt-volume-provisioner << EOF" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "PORT=8080" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "HOST=0.0.0.0" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "MINIO_ENDPOINT=https://minio.example.com" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "MINIO_ACCESS_KEY=your-access-key" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "MINIO_SECRET_KEY=your-secret-key" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "EOF" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "    chmod 600 /etc/libvirt-volume-provisioner/env" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "    chown libvirt-volume-provisioner:libvirt-volume-provisioner /etc/libvirt-volume-provisioner/env" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "    chmod 600 /etc/default/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "    chown libvirt-volume-provisioner:libvirt-volume-provisioner /etc/default/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "fi" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "# Set permissions" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
