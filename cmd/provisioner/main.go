@@ -19,6 +19,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// Build information - set at build time
+var (
+	version   = "dev"
+	buildTime = "unknown"
+)
+
 func main() {
 	// Configure logrus
 	logrus.SetFormatter(&logrus.TextFormatter{
@@ -29,6 +35,12 @@ func main() {
 	// Configure Gin
 	gin.SetMode(gin.ReleaseMode)
 	gin.DefaultWriter = logrus.StandardLogger().Writer()
+
+	// Log version information
+	logrus.WithFields(logrus.Fields{
+		"version":   version,
+		"buildTime": buildTime,
+	}).Info("Starting libvirt-volume-provisioner")
 
 	// Load configuration from environment
 	port := os.Getenv("PORT")

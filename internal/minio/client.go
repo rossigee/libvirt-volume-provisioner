@@ -10,6 +10,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/sirupsen/logrus"
 )
 
 // ProgressUpdater interface for updating job progress
@@ -34,15 +35,28 @@ func NewClient() (*Client, error) {
 		// Also check for AWS/MinIO standard variable name
 		accessKey = os.Getenv("MINIO_ACCESS_KEY_ID")
 	}
-	if accessKey == "" {
-		return nil, fmt.Errorf("MINIO_ACCESS_KEY or MINIO_ACCESS_KEY_ID environment variable is required (check /etc/default/libvirt-volume-provisioner)")
-	}
 
 	secretKey := os.Getenv("MINIO_SECRET_KEY")
 	if secretKey == "" {
 		// Also check for AWS/MinIO standard variable name
 		secretKey = os.Getenv("MINIO_SECRET_ACCESS_KEY")
 	}
+
+	// Debug logging for environment variables
+	logrus.WithFields(logrus.Fields{
+		"MINIO_ENDPOINT":              os.Getenv("MINIO_ENDPOINT"),
+		"MINIO_ACCESS_KEY_set":        os.Getenv("MINIO_ACCESS_KEY") != "",
+		"MINIO_ACCESS_KEY_ID_set":     os.Getenv("MINIO_ACCESS_KEY_ID") != "",
+		"MINIO_SECRET_KEY_set":        os.Getenv("MINIO_SECRET_KEY") != "",
+		"MINIO_SECRET_ACCESS_KEY_set": os.Getenv("MINIO_SECRET_ACCESS_KEY") != "",
+		"accessKey_found":             accessKey != "",
+		"secretKey_found":             secretKey != "",
+	}).Debug("MinIO environment variable check")
+
+	if accessKey == "" {
+		return nil, fmt.Errorf("MINIO_ACCESS_KEY or MINIO_ACCESS_KEY_ID environment variable is required (check /etc/default/libvirt-volume-provisioner)")
+	}
+
 	if secretKey == "" {
 		return nil, fmt.Errorf("MINIO_SECRET_KEY or MINIO_SECRET_ACCESS_KEY environment variable is required (check /etc/default/libvirt-volume-provisioner)")
 	}
