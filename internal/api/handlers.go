@@ -1,10 +1,13 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 )
 
@@ -21,6 +24,39 @@ type Handler struct {
 	jobManager JobManager
 }
 
+// Metrics
+var (
+	requestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "libvirt_volume_provisioner_requests_total",
+			Help: "Total number of requests by endpoint and method",
+		},
+		[]string{"method", "endpoint", "status"},
+	)
+
+	activeJobsGauge = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "libvirt_volume_provisioner_active_jobs",
+			Help: "Number of currently active jobs",
+		},
+	)
+
+	jobsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "libvirt_volume_provisioner_jobs_total",
+			Help: "Total number of jobs by status",
+		},
+		[]string{"status"},
+	)
+)
+
+func init() {
+	// Register metrics
+	prometheus.MustRegister(requestsTotal)
+	prometheus.MustRegister(activeJobsGauge)
+	prometheus.MustRegister(jobsTotal)
+}
+
 // NewHandler creates a new API handler
 func NewHandler(jobManager JobManager) *Handler {
 	return &Handler{
@@ -28,17 +64,36 @@ func NewHandler(jobManager JobManager) *Handler {
 	}
 }
 
+// metricsMiddleware tracks request metrics
+func metricsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+
+		// Track request metrics
+		status := c.Writer.Status()
+		requestsTotal.WithLabelValues(c.Request.Method, c.FullPath(), fmt.Sprintf("%d", status)).Inc()
+	}
+}
+
 // SetupRoutes configures the API routes
-func SetupRoutes(router *gin.Engine, handler *Handler) {
+func SetupRoutes(router *gin.Engine, handler *Handler, authMiddleware gin.HandlerFunc) {
+	// Add metrics middleware to all routes
+	router.Use(metricsMiddleware())
+
+	// Public endpoints (no auth required)
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
+	router.GET("/health", handler.HealthCheck)
+	router.GET("/healthz", handler.HealthCheck)
+	router.GET("/livez", handler.HealthCheck)
+
+	// API routes (with auth)
 	api := router.Group("/api/v1")
+	api.Use(authMiddleware)
 	{
 		api.POST("/provision", handler.ProvisionVolume)
 		api.GET("/status/:job_id", handler.GetJobStatus)
 		api.DELETE("/cancel/:job_id", handler.CancelJob)
 	}
-
-	// Health check endpoint
-	router.GET("/health", handler.HealthCheck)
 }
 
 // ProvisionVolume handles volume provisioning requests
@@ -66,6 +121,7 @@ func (h *Handler) ProvisionVolume(c *gin.Context) {
 	// Start provisioning job
 	jobID, err := h.jobManager.StartJob(req)
 	if err != nil {
+		jobsTotal.WithLabelValues("failed").Inc()
 		c.JSON(http.StatusInternalServerError, types.ErrorResponse{
 			Error:   "failed to start provisioning",
 			Message: err.Error(),
@@ -73,6 +129,9 @@ func (h *Handler) ProvisionVolume(c *gin.Context) {
 		})
 		return
 	}
+
+	// Update metrics
+	jobsTotal.WithLabelValues("started").Inc()
 
 	response := types.ProvisionResponse{
 		JobID:         jobID,
@@ -137,7 +196,10 @@ func (h *Handler) CancelJob(c *gin.Context) {
 
 // HealthCheck provides service health information
 func (h *Handler) HealthCheck(c *gin.Context) {
-	activeJobs := h.jobManager.GetActiveJobs()
+	activeJobsCount := h.jobManager.GetActiveJobs()
+
+	// Update metrics
+	activeJobsGauge.Set(float64(activeJobsCount))
 
 	response := types.HealthResponse{
 		Status:    "healthy",
@@ -147,7 +209,7 @@ func (h *Handler) HealthCheck(c *gin.Context) {
 	}
 
 	// Return degraded status if too many active jobs
-	if activeJobs > 2 {
+	if activeJobsCount > 2 {
 		response.Status = "degraded"
 		c.JSON(http.StatusOK, response)
 		return

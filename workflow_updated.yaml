@@ -17,13 +17,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Extract version
-      id: version
-      run: |
-        VERSION=${GITHUB_REF_NAME#v}  # Remove 'v' prefix
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "Building version: $VERSION"
-
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
@@ -57,7 +50,7 @@ jobs:
     - name: Upload Debian package
       uses: actions/upload-artifact@v4
       with:
-        name: libvirt-volume-provisioner-v0.1.1-amd64.deb
+        name: libvirt-volume-provisioner-${{ github.ref_name }}-amd64.deb
         path: libvirt-volume-provisioner_0.1.1_amd64.deb
 
   build-and-push-docker:
@@ -105,16 +98,10 @@ jobs:
     environment: release
 
     steps:
-    - name: Extract version
-      id: version
-      run: |
-        VERSION=${GITHUB_REF_NAME#v}  # Remove 'v' prefix
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-
     - name: Download Debian package
       uses: actions/download-artifact@v4
       with:
-        name: libvirt-volume-provisioner-v0.1.1-amd64.deb
+        name: libvirt-volume-provisioner-${{ github.ref_name }}-amd64.deb
 
     - name: Install MinIO Client
       run: |
@@ -138,7 +125,7 @@ jobs:
 
     - name: Add new package to repository
       run: |
-        ./update-repo.sh libvirt-volume-provisioner_${{ steps.version.outputs.version }}_amd64.deb
+        ./update-repo.sh libvirt-volume-provisioner_0.1.1_amd64.deb
 
     - name: Upload updated repository
       run: |
@@ -152,24 +139,18 @@ jobs:
       contents: write
 
     steps:
-    - name: Extract version
-      id: version
-      run: |
-        VERSION=${GITHUB_REF_NAME#v}  # Remove 'v' prefix
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-
     - name: Checkout code
       uses: actions/checkout@v4
 
     - name: Download Debian package
       uses: actions/download-artifact@v4
       with:
-        name: libvirt-volume-provisioner-v0.1.1-amd64.deb
+        name: libvirt-volume-provisioner-${{ github.ref_name }}-amd64.deb
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        files: libvirt-volume-provisioner_${{ steps.version.outputs.version }}_amd64.deb
+        files: libvirt-volume-provisioner_0.1.1_amd64.deb
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

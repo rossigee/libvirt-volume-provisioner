@@ -80,15 +80,17 @@ func main() {
 	// Initialize Gin router
 	router := gin.New()
 
-	// Add middleware
+	// Add global middleware
 	router.Use(gin.Recovery())
-	router.Use(authValidator.Middleware())
 
 	// Initialize API handlers
 	apiHandler := api.NewHandler(jobManager)
 
-	// Setup routes
-	api.SetupRoutes(router, apiHandler)
+	// Setup routes (includes auth middleware for API routes only)
+	api.SetupRoutes(router, apiHandler, authValidator.Middleware())
+
+	// Add authentication middleware to all remaining routes
+	router.Use(authValidator.Middleware())
 
 	// Create HTTP server
 	var srv *http.Server
