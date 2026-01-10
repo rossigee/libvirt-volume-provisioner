@@ -1,3 +1,5 @@
+// Package api provides HTTP API handlers for the libvirt-volume-provisioner service,
+// including REST endpoints for volume provisioning, job status, and health checks.
 package api
 
 import (
@@ -134,9 +136,7 @@ func (h *Handler) ProvisionVolume(c *gin.Context) {
 	jobsTotal.WithLabelValues("started").Inc()
 
 	response := types.ProvisionResponse{
-		JobID:         jobID,
-		Status:        "accepted",
-		CorrelationID: req.CorrelationID,
+		JobID: jobID,
 	}
 
 	c.JSON(http.StatusAccepted, response)
@@ -179,7 +179,8 @@ func (h *Handler) CancelJob(c *gin.Context) {
 		return
 	}
 
-	if err := h.jobManager.CancelJob(jobID); err != nil {
+	err := h.jobManager.CancelJob(jobID)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, types.ErrorResponse{
 			Error:   "failed to cancel job",
 			Message: err.Error(),

@@ -1,7 +1,9 @@
+//nolint:revive // Test package name is standard
 package api
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -33,7 +35,7 @@ func (m *MockJobManager) GetJobStatus(jobID string) (*types.StatusResponse, erro
 	}, nil
 }
 
-func (m *MockJobManager) CancelJob(jobID string) error {
+func (m *MockJobManager) CancelJob(_ string) error {
 	return nil
 }
 
@@ -54,7 +56,12 @@ func TestSetupRoutes(t *testing.T) {
 	mockManager := &MockJobManager{}
 	handler := NewHandler(mockManager)
 
-	SetupRoutes(router, handler)
+	// Mock auth middleware
+	authMiddleware := func(c *gin.Context) {
+		c.Next()
+	}
+
+	SetupRoutes(router, handler, authMiddleware)
 
 	// Test that routes are registered
 	routes := router.Routes()
@@ -70,6 +77,9 @@ func TestSetupRoutes(t *testing.T) {
 	assert.True(t, routePaths["GET /api/v1/status/:job_id"])
 	assert.True(t, routePaths["DELETE /api/v1/cancel/:job_id"])
 	assert.True(t, routePaths["GET /health"])
+	assert.True(t, routePaths["GET /healthz"])
+	assert.True(t, routePaths["GET /livez"])
+	assert.True(t, routePaths["GET /metrics"])
 }
 
 func TestHealthCheck(t *testing.T) {
@@ -77,10 +87,15 @@ func TestHealthCheck(t *testing.T) {
 	mockManager := &MockJobManager{}
 	handler := NewHandler(mockManager)
 
-	SetupRoutes(router, handler)
+	// Mock auth middleware
+	authMiddleware := func(c *gin.Context) {
+		c.Next()
+	}
+
+	SetupRoutes(router, handler, authMiddleware)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/health", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -92,10 +107,17 @@ func TestProvisionVolume_InvalidJSON(t *testing.T) {
 	mockManager := &MockJobManager{}
 	handler := NewHandler(mockManager)
 
-	SetupRoutes(router, handler)
+	// Mock auth middleware
+	authMiddleware := func(c *gin.Context) {
+		c.Next()
+	}
+
+	SetupRoutes(router, handler, authMiddleware)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/api/v1/provision", bytes.NewBufferString("invalid json"))
+	body := bytes.NewBufferString("invalid json")
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"/api/v1/provision", body)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
@@ -108,11 +130,18 @@ func TestProvisionVolume_MissingFields(t *testing.T) {
 	mockManager := &MockJobManager{}
 	handler := NewHandler(mockManager)
 
-	SetupRoutes(router, handler)
+	// Mock auth middleware
+	authMiddleware := func(c *gin.Context) {
+		c.Next()
+	}
+
+	SetupRoutes(router, handler, authMiddleware)
 
 	// Test with empty request
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/api/v1/provision", bytes.NewBufferString("{}"))
+	body := bytes.NewBufferString("{}")
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"/api/v1/provision", body)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
@@ -125,7 +154,12 @@ func TestProvisionVolume_ValidRequest(t *testing.T) {
 	mockManager := &MockJobManager{}
 	handler := NewHandler(mockManager)
 
-	SetupRoutes(router, handler)
+	// Mock auth middleware
+	authMiddleware := func(c *gin.Context) {
+		c.Next()
+	}
+
+	SetupRoutes(router, handler, authMiddleware)
 
 	requestBody := `{
 		"image_url": "https://minio.example.com/bucket/image.qcow2",
@@ -135,7 +169,9 @@ func TestProvisionVolume_ValidRequest(t *testing.T) {
 	}`
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/api/v1/provision", bytes.NewBufferString(requestBody))
+	body := bytes.NewBufferString(requestBody)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"/api/v1/provision", body)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 

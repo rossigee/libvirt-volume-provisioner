@@ -1,3 +1,5 @@
+// Package lvm provides functionality for managing LVM (Logical Volume Manager)
+// volumes including creation, conversion, and removal operations.
 package lvm
 
 import (
@@ -42,10 +44,11 @@ func (m *Manager) CreateVolume(volumeName string, sizeGB int) error {
 	}
 
 	// Create LVM volume
+	//nolint:gosec,noctx // LVM command parameters are validated and controlled internally
 	cmd := exec.Command("lvcreate", "-L", fmt.Sprintf("%dG", sizeGB), "-n", volumeName, m.vgName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to create LVM volume: %s, output: %s", err, string(output))
+		return fmt.Errorf("failed to create LVM volume: %w, output: %s", err, string(output))
 	}
 
 	return nil
@@ -57,6 +60,7 @@ func (m *Manager) PopulateVolume(imagePath, volumeName, imageType string, update
 	devicePath := fmt.Sprintf("/dev/%s/%s", m.vgName, volumeName)
 
 	// Verify the device exists
+	//nolint:gosec,noctx // Device path from internal volume name; validation doesn't need context
 	if _, err := exec.Command("test", "-b", devicePath).CombinedOutput(); err != nil {
 		return fmt.Errorf("LVM volume device does not exist: %s", devicePath)
 	}
@@ -66,9 +70,11 @@ func (m *Manager) PopulateVolume(imagePath, volumeName, imageType string, update
 	switch imageType {
 	case "qcow2":
 		// Convert QCOW2 to raw format directly to LVM device
+		//nolint:gosec,noctx // Image path is provided by caller, device path is internal
 		cmd = exec.Command("qemu-img", "convert", "-f", "qcow2", "-O", "raw", imagePath, devicePath)
 	case "raw":
 		// Direct copy for raw images
+		//nolint:gosec,noctx // Image path is provided by caller, device path is internal
 		cmd = exec.Command("dd", "if="+imagePath, "of="+devicePath, "bs=4M", "status=progress", "conv=fdatasync")
 	default:
 		return fmt.Errorf("unsupported image type: %s", imageType)
@@ -77,7 +83,7 @@ func (m *Manager) PopulateVolume(imagePath, volumeName, imageType string, update
 	// Execute conversion with progress tracking
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to populate LVM volume: %s, output: %s", err, string(output))
+		return fmt.Errorf("failed to populate LVM volume: %w, output: %s", err, string(output))
 	}
 
 	// Update progress
@@ -94,10 +100,11 @@ func (m *Manager) DeleteVolume(volumeName string) error {
 		return fmt.Errorf("volume %s does not exist", volumeName)
 	}
 
+	//nolint:gosec,noctx // Volume name is validated internally
 	cmd := exec.Command("lvremove", "-f", fmt.Sprintf("%s/%s", m.vgName, volumeName))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to delete LVM volume: %s, output: %s", err, string(output))
+		return fmt.Errorf("failed to delete LVM volume: %w, output: %s", err, string(output))
 	}
 
 	return nil
@@ -109,10 +116,12 @@ func (m *Manager) GetVolumeInfo(volumeName string) (*VolumeInfo, error) {
 		return nil, fmt.Errorf("volume %s does not exist", volumeName)
 	}
 
-	cmd := exec.Command("lvs", "--units", "b", "--noheadings", "-o", "lv_name,lv_size,lv_attr", fmt.Sprintf("%s/%s", m.vgName, volumeName))
+	fullPath := fmt.Sprintf("%s/%s", m.vgName, volumeName)
+	//nolint:gosec,noctx // Path constructed from internal volume name
+	cmd := exec.Command("lvs", "--units", "b", "--noheadings", "-o", "lv_name,lv_size,lv_attr", fullPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get volume info: %s, output: %s", err, string(output))
+		return nil, fmt.Errorf("failed to get volume info: %w, output: %s", err, string(output))
 	}
 
 	// Parse output
@@ -136,10 +145,11 @@ func (m *Manager) GetVolumeInfo(volumeName string) (*VolumeInfo, error) {
 
 // ListVolumes returns a list of all LVM volumes in the volume group
 func (m *Manager) ListVolumes() ([]string, error) {
+	//nolint:gosec,noctx // Volume group name is controlled internally
 	cmd := exec.Command("lvs", "--noheadings", "-o", "lv_name", m.vgName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list volumes: %s, output: %s", err, string(output))
+		return nil, fmt.Errorf("failed to list volumes: %w, output: %s", err, string(output))
 	}
 
 	var volumes []string
@@ -155,6 +165,7 @@ func (m *Manager) ListVolumes() ([]string, error) {
 
 // volumeExists checks if an LVM volume exists
 func (m *Manager) volumeExists(volumeName string) bool {
+	//nolint:gosec,noctx // Volume name is validated internally
 	cmd := exec.Command("lvs", fmt.Sprintf("%s/%s", m.vgName, volumeName))
 	return cmd.Run() == nil
 }

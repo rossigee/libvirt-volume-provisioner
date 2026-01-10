@@ -1,35 +1,40 @@
+// Package types defines common data structures used throughout the
+// libvirt-volume-provisioner application, including API request/response types.
+//
+//nolint:revive // package name 'types' is standard for data structure definitions
 package types
 
 import "time"
 
-// ProvisionRequest represents a volume provisioning request
+// ProvisionRequest represents a volume provisioning request.
 type ProvisionRequest struct {
-	ImageURL      string `json:"image_url" binding:"required"`
-	VolumeName    string `json:"volume_name" binding:"required"`
-	VolumeSizeGB  int    `json:"volume_size_gb" binding:"required,min=1"`
-	ImageType     string `json:"image_type" binding:"required,oneof=qcow2 raw"`
-	CorrelationID string `json:"correlation_id,omitempty"`
+	ImageURL     string `binding:"required"       json:"image_url"`
+	VolumeName   string `binding:"required"       json:"volume_name"`
+	VolumeSizeGB int    `binding:"required,min=1" json:"volume_size_gb"`
+	ImageType    string `json:"image_type"`
 }
 
-// ProvisionResponse represents the response to a provisioning request
+// ProvisionResponse represents the response to a provisioning request.
 type ProvisionResponse struct {
-	JobID         string `json:"job_id"`
-	Status        string `json:"status"`
-	CorrelationID string `json:"correlation_id,omitempty"`
+	JobID string `json:"job_id"`
 }
 
-// JobStatus represents the status of a provisioning job
+// JobStatus represents the status of a provisioning job.
 type JobStatus string
 
+// Job status constants.
 const (
-	StatusPending   JobStatus = "pending"
-	StatusRunning   JobStatus = "running"
+	// StatusPending indicates the job is queued but not yet started.
+	StatusPending JobStatus = "pending"
+	// StatusRunning indicates the job is currently executing.
+	StatusRunning JobStatus = "running"
+	// StatusCompleted indicates the job finished successfully.
 	StatusCompleted JobStatus = "completed"
-	StatusFailed    JobStatus = "failed"
-	StatusCancelled JobStatus = "cancelled"
+	// StatusFailed indicates the job finished with an error.
+	StatusFailed JobStatus = "failed"
 )
 
-// ProgressInfo represents progress information for a job
+// ProgressInfo represents progress information for a job.
 type ProgressInfo struct {
 	Stage          string  `json:"stage"`
 	Percent        float64 `json:"percent"`
@@ -37,7 +42,7 @@ type ProgressInfo struct {
 	BytesTotal     int64   `json:"bytes_total"`
 }
 
-// StatusResponse represents the response to a status query
+// StatusResponse represents the response to a status query.
 type StatusResponse struct {
 	JobID         string        `json:"job_id"`
 	Status        JobStatus     `json:"status"`
@@ -48,14 +53,14 @@ type StatusResponse struct {
 	UpdatedAt     time.Time     `json:"updated_at"`
 }
 
-// ErrorResponse represents an error response
+// ErrorResponse represents an error response.
 type ErrorResponse struct {
 	Error   string `json:"error"`
-	Message string `json:"message,omitempty"`
-	Code    int    `json:"code,omitempty"`
+	Message string `json:"message"`
+	Code    int    `json:"code"`
 }
 
-// HealthResponse represents a health check response
+// HealthResponse represents a health check response.
 type HealthResponse struct {
 	Status    string    `json:"status"`
 	Timestamp time.Time `json:"timestamp"`

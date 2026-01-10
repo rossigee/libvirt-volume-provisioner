@@ -1,3 +1,5 @@
+// Package auth provides authentication and authorization functionality
+// for the libvirt-volume-provisioner service.
 package auth
 
 import (
@@ -26,12 +28,13 @@ func NewValidator() (*Validator, error) {
 	}
 
 	// Load client CA certificates
-	if err := validator.loadClientCAs(); err != nil {
+	err := validator.loadClientCAs()
+	if err != nil {
 		return nil, fmt.Errorf("failed to load client CAs: %w", err)
 	}
 
 	// Load API tokens
-	if err := validator.loadAPITokens(); err != nil {
+	if err = validator.loadAPITokens(); err != nil {
 		return nil, fmt.Errorf("failed to load API tokens: %w", err)
 	}
 
@@ -51,6 +54,7 @@ func (v *Validator) loadClientCAs() error {
 		return nil
 	}
 
+	//nolint:gosec // File path is controlled by admin via environment variable
 	caCert, err := os.ReadFile(caCertPath)
 	if err != nil {
 		return fmt.Errorf("failed to read CA cert: %w", err)
@@ -68,6 +72,7 @@ func (v *Validator) loadClientCAs() error {
 func (v *Validator) loadAPITokens() error {
 	tokenFile := os.Getenv("API_TOKENS_FILE")
 	if tokenFile == "" {
+		//nolint:gosec // Default configuration file path, not credentials
 		tokenFile = "/etc/libvirt-volume-provisioner/api-tokens"
 	}
 
@@ -77,6 +82,7 @@ func (v *Validator) loadAPITokens() error {
 		return nil
 	}
 
+	//nolint:gosec // File path is controlled by admin via environment variable
 	content, err := os.ReadFile(tokenFile)
 	if err != nil {
 		return fmt.Errorf("failed to read API tokens: %w", err)

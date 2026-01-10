@@ -1,3 +1,5 @@
+// Package main provides the entry point for the libvirt-volume-provisioner application.
+// This is a service for provisioning LVM volumes from MinIO-hosted disk images.
 package main
 
 import (
@@ -97,14 +99,22 @@ func main() {
 	if !authValidator.IsClientCALoaded() {
 		// Run HTTP server for development when no client CA is configured
 		srv = &http.Server{
-			Addr:    fmt.Sprintf("%s:%s", host, port),
-			Handler: router,
+			Addr:              fmt.Sprintf("%s:%s", host, port),
+			Handler:           router,
+			ReadTimeout:       15 * time.Second,
+			ReadHeaderTimeout: 15 * time.Second,
+			WriteTimeout:      15 * time.Second,
+			IdleTimeout:       60 * time.Second,
 		}
 	} else {
 		// Run HTTPS server when client CA is configured
 		srv = &http.Server{
-			Addr:    fmt.Sprintf("%s:%s", host, port),
-			Handler: router,
+			Addr:              fmt.Sprintf("%s:%s", host, port),
+			Handler:           router,
+			ReadTimeout:       15 * time.Second,
+			ReadHeaderTimeout: 15 * time.Second,
+			WriteTimeout:      15 * time.Second,
+			IdleTimeout:       60 * time.Second,
 			TLSConfig: &tls.Config{
 				ClientAuth: tls.RequireAndVerifyClientCert,
 				ClientCAs:  authValidator.GetClientCAs(),
@@ -122,7 +132,8 @@ func main() {
 				"mode": "development (HTTP - no client CA)",
 			}).Info("Starting libvirt-volume-provisioner server")
 			// Run HTTP server for development
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			err := srv.ListenAndServe()
+			if err != nil && err != http.ErrServerClosed {
 				logrus.WithError(err).Fatal("Failed to start HTTP server")
 			}
 		} else {
@@ -132,7 +143,8 @@ func main() {
 				"mode": "production (HTTPS - client CA configured)",
 			}).Info("Starting libvirt-volume-provisioner server")
 			// Run HTTPS server
-			if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+			err := srv.ListenAndServeTLS("", "")
+			if err != nil && err != http.ErrServerClosed {
 				logrus.WithError(err).Fatal("Failed to start HTTPS server")
 			}
 		}

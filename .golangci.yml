@@ -1,0 +1,113 @@
+---
+version: "2"
+
+run:
+  timeout: 5m
+  skip-dirs-use-default: true
+
+linters:
+  default: none
+  enable:
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - decorder
+    - dogsled
+    - dupl
+    - dupword
+    - durationcheck
+    - errcheck
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - exptostd
+    - forbidigo
+    - forcetypeassert
+    - gosec
+    - gosmopolitan
+    - govet
+    - grouper
+    - ineffassign
+    - interfacebloat
+    - iotamixing
+    - ireturn
+    - lll
+    - makezero
+    - mirror
+    - misspell
+    - musttag
+    - nakedret
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - noctx
+    - nolintlint
+    - nonamedreturns
+    - nosprintfhostport
+    - prealloc
+    - predeclared
+    - promlinter
+    - protogetter
+    - reassign
+    - recvcheck
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - staticcheck
+    - tagalign
+    - testableexamples
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - unqueryvet
+    - unused
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+    - wrapcheck
+    - zerologlint
+
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - goimports
+
+linters-settings:
+  errcheck:
+    check-blank: true
+    check-type-assertions: true
+
+  lll:
+    line-length: 120
+    tab-width: 2
+
+  gosec:
+    severity: medium
+    confidence: medium
+
+  godox:
+    keywords:
+      - BUG
+      - FIXME
+      - HACK
+      - NOTE
+      - TODO
+
+issues:
+  exclude-rules:
+    - path: "_test\\.go$"
+      linters:
+        - gosec
+        - noctx
+        - wrapcheck
+    - path: "mocks"
+      linters:
+        - unused
+  max-same-issues: 10
+  max-issues-per-linter: 0

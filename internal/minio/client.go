@@ -1,7 +1,10 @@
+// Package minio provides MinIO client functionality for the libvirt-volume-provisioner,
+// including image download operations and progress tracking.
 package minio
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -13,17 +16,17 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// ProgressUpdater interface for updating job progress
+// ProgressUpdater interface for updating job progress.
 type ProgressUpdater interface {
 	UpdateProgress(stage string, percent float64, bytesProcessed, bytesTotal int64)
 }
 
-// Client handles MinIO operations
+// Client handles MinIO operations.
 type Client struct {
-	client *minio.Client
+	minioClient *minio.Client
 }
 
-// NewClient creates a new MinIO client
+// NewClient creates a new MinIO client.
 func NewClient() (*Client, error) {
 	endpoint := os.Getenv("MINIO_ENDPOINT")
 	if endpoint == "" {
@@ -54,11 +57,15 @@ func NewClient() (*Client, error) {
 	}).Debug("MinIO environment variable check")
 
 	if accessKey == "" {
-		return nil, fmt.Errorf("MINIO_ACCESS_KEY or MINIO_ACCESS_KEY_ID environment variable is required (check /etc/default/libvirt-volume-provisioner)")
+		return nil, fmt.Errorf(
+			"MINIO_ACCESS_KEY or MINIO_ACCESS_KEY_ID environment variable is required " +
+				"(check /etc/default/libvirt-volume-provisioner)")
 	}
 
 	if secretKey == "" {
-		return nil, fmt.Errorf("MINIO_SECRET_KEY or MINIO_SECRET_ACCESS_KEY environment variable is required (check /etc/default/libvirt-volume-provisioner)")
+		return nil, fmt.Errorf(
+			"MINIO_SECRET_KEY or MINIO_SECRET_ACCESS_KEY environment variable is required " +
+				"(check /etc/default/libvirt-volume-provisioner)")
 	}
 
 	// Parse endpoint URL
@@ -85,7 +92,7 @@ func NewClient() (*Client, error) {
 	}
 
 	return &Client{
-		client: minioClient,
+		minioClient: minioClient,
 	}, nil
 }
 
@@ -118,7 +125,7 @@ func (c *Client) DownloadImage(ctx context.Context, imageURL string, updater Pro
 	tempPath := tempFile.Name()
 
 	// Get object info for size
-	objInfo, err := c.client.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
+	objInfo, err := c.minioClient.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
 	if err != nil {
 		_ = os.Remove(tempPath) // Cleanup errors are not critical
 		return "", fmt.Errorf("failed to stat object: %w", err)
@@ -127,7 +134,7 @@ func (c *Client) DownloadImage(ctx context.Context, imageURL string, updater Pro
 	totalSize := objInfo.Size
 
 	// Download object with progress tracking
-	object, err := c.client.GetObject(ctx, bucketName, objectName, minio.GetObjectOptions{})
+	object, err := c.minioClient.GetObject(ctx, bucketName, objectName, minio.GetObjectOptions{})
 	if err != nil {
 		_ = os.Remove(tempPath) // Cleanup errors are not critical
 		return "", fmt.Errorf("failed to get object: %w", err)
@@ -144,7 +151,7 @@ func (c *Client) DownloadImage(ctx context.Context, imageURL string, updater Pro
 		select {
 		case <-ctx.Done():
 			_ = os.Remove(tempPath) // Cleanup errors are not critical
-			return "", ctx.Err()
+			return "", fmt.Errorf("context cancelled: %w", ctx.Err())
 		default:
 		}
 
@@ -163,7 +170,7 @@ func (c *Client) DownloadImage(ctx context.Context, imageURL string, updater Pro
 			}
 		}
 
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -184,7 +191,10 @@ func (c *Client) DownloadImage(ctx context.Context, imageURL string, updater Pro
 // Cleanup removes a temporary file
 func (c *Client) Cleanup(tempPath string) error {
 	if tempPath != "" {
-		return os.Remove(tempPath)
+		err := os.Remove(tempPath)
+		if err != nil {
+			return fmt.Errorf("failed to cleanup temp file: %w", err)
+		}
 	}
 	return nil
 }
@@ -205,7 +215,7 @@ func (c *Client) ValidateImageURL(ctx context.Context, imageURL string) error {
 	objectName := strings.Join(pathParts[1:], "/")
 
 	// Check if object exists
-	_, err = c.client.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
+	_, err = c.minioClient.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
 	if err != nil {
 		return fmt.Errorf("image not accessible: %w", err)
 	}

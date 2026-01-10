@@ -1,3 +1,5 @@
+// Package jobs manages the lifecycle of volume provisioning jobs
+// including creation, execution tracking, and status reporting.
 package jobs
 
 import (
@@ -12,7 +14,7 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 )
 
-// Job represents a volume provisioning job
+// Job represents a volume provisioning job.
 type Job struct {
 	ID         string
 	Status     types.JobStatus
@@ -24,7 +26,7 @@ type Job struct {
 	cancelFunc context.CancelFunc
 }
 
-// UpdateProgress implements the ProgressUpdater interface
+// UpdateProgress implements the ProgressUpdater interface.
 func (j *Job) UpdateProgress(stage string, percent float64, bytesProcessed, bytesTotal int64) {
 	j.Progress = &types.ProgressInfo{
 		Stage:          stage,
@@ -35,7 +37,7 @@ func (j *Job) UpdateProgress(stage string, percent float64, bytesProcessed, byte
 	j.UpdatedAt = time.Now()
 }
 
-// Manager manages volume provisioning jobs
+// Manager manages volume provisioning jobs.
 type Manager struct {
 	minioClient *minio.Client
 	lvmManager  *lvm.Manager
@@ -44,7 +46,7 @@ type Manager struct {
 	mu          sync.RWMutex
 }
 
-// NewManager creates a new job manager
+// NewManager creates a new job manager.
 func NewManager(minioClient *minio.Client, lvmManager *lvm.Manager) *Manager {
 	return &Manager{
 		minioClient: minioClient,
@@ -54,7 +56,7 @@ func NewManager(minioClient *minio.Client, lvmManager *lvm.Manager) *Manager {
 	}
 }
 
-// StartJob starts a new volume provisioning job
+// StartJob starts a new volume provisioning job.
 func (m *Manager) StartJob(req types.ProvisionRequest) (string, error) {
 	jobID := uuid.New().String()
 
@@ -93,7 +95,7 @@ func (m *Manager) GetJobStatus(jobID string) (*types.StatusResponse, error) {
 		JobID:         job.ID,
 		Status:        job.Status,
 		Progress:      job.Progress,
-		CorrelationID: job.Request.CorrelationID,
+		CorrelationID: job.ID, // Use job ID as correlation ID
 		CreatedAt:     job.CreatedAt,
 		UpdatedAt:     job.UpdatedAt,
 	}
@@ -120,7 +122,7 @@ func (m *Manager) CancelJob(jobID string) error {
 	}
 
 	job.cancelFunc()
-	job.Status = types.StatusCancelled
+	job.Status = types.StatusFailed
 	job.UpdatedAt = time.Now()
 
 	return nil
@@ -133,7 +135,7 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 	case m.semaphore <- struct{}{}:
 		defer func() { <-m.semaphore }()
 	case <-ctx.Done():
-		job.Status = types.StatusCancelled
+		job.Status = types.StatusFailed
 		job.UpdatedAt = time.Now()
 		return
 	}
@@ -146,7 +148,8 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 	}()
 
 	// Execute provisioning steps
-	if err := m.provisionVolume(ctx, job); err != nil {
+	err := m.provisionVolume(ctx, job)
+	if err != nil {
 		job.Status = types.StatusFailed
 		job.Error = err
 		return
@@ -222,7 +225,7 @@ func (m *Manager) CleanupCompletedJobs() {
 	// Keep only recent jobs
 	completed := make([]string, 0)
 	for id, job := range m.jobs {
-		if job.Status == types.StatusCompleted || job.Status == types.StatusFailed || job.Status == types.StatusCancelled {
+		if job.Status == types.StatusCompleted || job.Status == types.StatusFailed {
 			completed = append(completed, id)
 		}
 	}
