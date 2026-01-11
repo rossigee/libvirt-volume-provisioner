@@ -81,7 +81,7 @@ for file in dists/stable/main/binary-amd64/Packages*; do
     fi
 done
 
-        # Sign Release file (skip for now - using trusted repo)
-        # gpg --detach-sign --armor --sign --default-key 20879EBE6582F6BF1506DE02DB5CF7EA238FE114 dists/stable/Release
+        # Sign Release file
+        gpg --detach-sign --armor --sign --default-key 20879EBE6582F6BF1506DE02DB5CF7EA238FE114 dists/stable/Release
 
 echo "Repository updated successfully"

@@ -119,6 +119,13 @@ jobs:
       with:
         name: libvirt-volume-provisioner-${{ steps.version.outputs.version }}-amd64.deb
 
+    - name: Import GPG key
+      if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+      run: |
+        echo "Importing GPG key..."
+        echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --import --batch --yes
+        echo "GPG key imported successfully"
+
     - name: Install MinIO Client
       run: |
         wget https://dl.min.io/client/mc/release/linux-amd64/mc
