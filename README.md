@@ -75,7 +75,26 @@ Cancel a running provisioning job.
 
 ## Installation
 
-### Option 1: Native Installation
+### Option 1: Debian Repository (Recommended)
+
+1. **Add the repository** (see [REPOSITORY-README.md](REPOSITORY-README.md) for detailed instructions):
+
+    ```bash
+    # Automated setup
+    curl -fsSL https://raw.githubusercontent.com/rossigee/libvirt-volume-provisioner/main/setup-repo.sh | sudo bash
+
+    # Manual setup
+    curl -fsSL https://debs.golder.tech/gpg-key.asc | gpg --dearmor | sudo tee /usr/share/keyrings/golder-tech-archive-keyring.gpg > /dev/null
+    echo "deb [signed-by=/usr/share/keyrings/golder-tech-archive-keyring.gpg] https://debs.golder.tech stable main" | sudo tee /etc/apt/sources.list.d/golder-tech.list
+    sudo apt update
+    ```
+
+2. **Install the package:**
+    ```bash
+    sudo apt install libvirt-volume-provisioner
+    ```
+
+### Option 2: Native Installation
 
 1. **Add to hypervisor ISO:**
     ```bash
@@ -168,18 +187,30 @@ Tagged releases (e.g., `v0.1.0`) automatically trigger the release pipeline:
 
 ### Repository Setup
 
-The project deploys to an internal B2-backed Debian repository. To set up the deployment:
+The project deploys to a B2-backed Debian repository with GPG signature verification.
+
+#### For Repository Maintainers (CI/CD Setup):
 
 1. **Create B2 Bucket**: Ensure `debs-golder-tech-static` bucket exists
 2. **Configure Repository Structure**: The bucket should have `dists/` and `pool/` directories
 3. **Set GitHub Secrets**:
    - `B2_KEY_ID`: Your B2 application key ID
    - `B2_APPLICATION_KEY`: Your B2 application key
-4. **Add Repository to Systems**:
-   ```bash
-   # Add to /etc/apt/sources.list.d/golder-tech.list
-   deb [trusted=yes] https://debs.golder.tech stable main
-   ```
+   - `GPG_PRIVATE_KEY`: Your GPG private key (exported with `gpg --export-secret-keys --armor <key-id>`)
+
+#### For Users (Installing from Repository):
+
+See [REPOSITORY-README.md](REPOSITORY-README.md) for detailed setup instructions, or use the automated setup script:
+
+```bash
+# Download and run the setup script
+curl -fsSL https://raw.githubusercontent.com/rossigee/libvirt-volume-provisioner/main/setup-repo.sh | sudo bash
+
+# Or manually:
+sudo curl -fsSL https://debs.golder.tech/gpg-key.asc | gpg --dearmor | sudo tee /usr/share/keyrings/golder-tech-archive-keyring.gpg > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/golder-tech-archive-keyring.gpg] https://debs.golder.tech stable main" | sudo tee /etc/apt/sources.list.d/golder-tech.list
+sudo apt update
+```
 
 ### Creating a Release
 
