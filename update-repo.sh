@@ -5,18 +5,28 @@ set -e
 # Usage: ./update-repo.sh <deb-file>
 
 DEB_FILE="$1"
-REPO_DIR="repo"
 
 if [ -z "$DEB_FILE" ]; then
     echo "Usage: $0 <deb-file>"
     exit 1
 fi
 
-# Ensure we're in the repo directory
-mkdir -p "$REPO_DIR/pool/main"
-cp "$DEB_FILE" "$REPO_DIR/pool/main/"
+if [ ! -f "$DEB_FILE" ]; then
+    echo "Error: DEB file '$DEB_FILE' does not exist"
+    exit 1
+fi
 
-cd "$REPO_DIR"
+# We're already in the repo directory (called from workflow)
+mkdir -p "pool/main"
+mkdir -p "dists/stable/main/binary-amd64"
+
+echo "Copying $DEB_FILE to pool/main/"
+cp "$DEB_FILE" "pool/main/"
+
+if [ ! -f "pool/main/$(basename "$DEB_FILE")" ]; then
+    echo "Error: Failed to copy DEB file to repository"
+    exit 1
+fi
 
 # Generate Packages file
 dpkg-scanpackages pool/main /dev/null > dists/stable/main/binary-amd64/Packages
