@@ -15,7 +15,7 @@ BINARY_UNIX=$(BINARY_NAME)_unix
 
 # Debian package parameters
 DEB_NAME=libvirt-volume-provisioner
-DEB_VERSION ?= 0.2.0
+DEB_VERSION ?= 0.2.2
 DEB_ARCH=amd64
 DEB_BUILD_DIR=deb-build
 
@@ -121,7 +121,7 @@ deb: build-linux
 	@echo "DB_PATH=/var/lib/libvirt-volume-provisioner/jobs.db" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "EOF" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "    chmod 600 /etc/default/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "    chown libvirt-volume-provisioner:libvirt-volume-provisioner /etc/default/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "    chown root:root /etc/default/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "fi" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "# Set permissions" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
