@@ -1,0 +1,117 @@
+version: '3.8'
+
+services:
+  # MinIO S3-compatible storage for testing
+  minio:
+    image: minio/minio:RELEASE.2024-01-16T16-07-38Z
+    container_name: test-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: testminio
+      MINIO_ROOT_PASSWORD: testminio123
+      MINIO_CONSOLE_ADDRESS: ":9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # PostgreSQL for job storage (more realistic than SQLite for testing)
+  postgres:
+    image: postgres:15-alpine
+    container_name: test-postgres
+    environment:
+      POSTGRES_DB: libvirt_test
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser -d libvirt_test"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis for caching (optional performance testing)
+  redis:
+    image: redis:7-alpine
+    container_name: test-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # libvirt daemon for VM management testing
+  libvirt:
+    image: ubuntu:22.04
+    container_name: test-libvirt
+    privileged: true
+    environment:
+      DEBIAN_FRONTEND: noninteractive
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - libvirt_data:/var/lib/libvirt:rw
+      - /var/run/libvirt:/var/run/libvirt:rw
+    ports:
+      - "16509:16509"
+    command: >
+      bash -c "
+      apt-get update && apt-get install -y libvirt-daemon-system libvirt-clients qemu-kvm lvm2 &&
+      systemctl enable libvirtd &&
+      systemctl start libvirtd &&
+      sleep infinity
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "virsh version >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Test runner container
+  integration-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: test-runner
+    depends_on:
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      libvirt:
+        condition: service_healthy
+    environment:
+      # Test configuration
+      TEST_MINIO_ENDPOINT: http://minio:9000
+      TEST_MINIO_ACCESS_KEY: testminio
+      TEST_MINIO_SECRET_KEY: testminio123
+      TEST_POSTGRES_DSN: postgres://testuser:testpass@postgres:5432/libvirt_test?sslmode=disable
+      TEST_REDIS_URL: redis://redis:6379
+      TEST_LIBVIRT_URI: qemu:///system
+      TEST_LVM_VG: testvg
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    command: ["go", "test", "-v", "./integration/..."]
+
+volumes:
+  minio_data:
+  postgres_data:
+  redis_data:
+  libvirt_data:
