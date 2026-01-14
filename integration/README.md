@@ -42,7 +42,7 @@ The test suite spins up a complete environment with:
 
 - **MinIO** - S3-compatible object storage for test images
 - **PostgreSQL** - Database for job persistence (more realistic than SQLite)
-- **Redis** - Optional caching layer for performance testing
+- **Valkey** - Optional caching layer for performance testing
 - **libvirt** - VM management daemon for LVM operations
 - **Test Runner** - Containerized test execution environment
 
@@ -81,7 +81,7 @@ The tests automatically generate and upload test QCOW2 images of various sizes (
 | `TEST_MINIO_ACCESS_KEY` | `testminio` | MinIO access key |
 | `TEST_MINIO_SECRET_KEY` | `testminio123` | MinIO secret key |
 | `TEST_POSTGRES_DSN` | `postgres://testuser:testpass@postgres:5432/libvirt_test` | PostgreSQL connection |
-| `TEST_REDIS_URL` | `redis://redis:6379` | Redis connection URL |
+| `TEST_VALKEY_URL` | `redis://valkey:6379` | Valkey connection URL |
 | `TEST_LIBVIRT_URI` | `qemu:///system` | libvirt connection URI |
 | `TEST_LVM_VG` | `testvg` | LVM volume group for testing |
 | `TEST_PROVISIONER_URL` | `http://localhost:8080` | Provisioner API endpoint |
@@ -138,8 +138,8 @@ open http://localhost:9001
 # PostgreSQL
 docker exec -it test-postgres psql -U testuser -d libvirt_test
 
-# Redis
-docker exec -it test-redis redis-cli
+# Valkey
+docker exec -it test-valkey valkey-cli
 ```
 
 ### Test Debugging

@@ -24,7 +24,7 @@ services:
 
   # PostgreSQL for job storage (more realistic than SQLite for testing)
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: test-postgres
     environment:
       POSTGRES_DB: libvirt_test
@@ -41,15 +41,15 @@ services:
       retries: 3
 
   # Redis for caching (optional performance testing)
-  redis:
-    image: redis:8-alpine
-    container_name: test-redis
+  valkey:
+    image: valkey/valkey:9.0.1-alpine
+    container_name: test-valkey
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data
+      - valkey_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "valkey-cli", "ping"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -102,7 +102,7 @@ services:
       TEST_MINIO_ACCESS_KEY: testminio
       TEST_MINIO_SECRET_KEY: testminio123
       TEST_POSTGRES_DSN: postgres://testuser:testpass@postgres:5432/libvirt_test?sslmode=disable
-      TEST_REDIS_URL: redis://redis:6379
+      TEST_VALKEY_URL: redis://valkey:6379
       TEST_LIBVIRT_URI: qemu:///system
       TEST_LVM_VG: testvg
     volumes:
@@ -113,5 +113,5 @@ services:
 volumes:
   minio_data:
   postgres_data:
-  redis_data:
+  valkey_data:
   libvirt_data:
