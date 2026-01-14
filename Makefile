@@ -195,13 +195,29 @@ build-docker-dev: ## Build development Docker image
 	docker build -f Dockerfile -t $(BINARY_NAME):dev .
 
 docker-compose-up: ## Start with docker-compose
-	docker-compose up -d
+	docker compose up -d
 
 docker-compose-down: ## Stop docker-compose
-	docker-compose down
+	docker compose down
 
 docker-compose-logs: ## Show docker-compose logs
-	docker-compose logs -f
+	docker compose logs -f
+
+# Integration testing targets
+integration-up: ## Start integration test environment
+	cd integration && docker compose -f docker-compose.test.yml up -d
+
+integration-down: ## Stop integration test environment
+	cd integration && docker compose -f docker-compose.test.yml down -v
+
+integration-logs: ## Show integration test logs
+	cd integration && docker compose -f docker-compose.test.yml logs -f
+
+integration-test: ## Run integration tests
+	cd integration && docker compose -f docker-compose.test.yml run --rm integration-tests
+
+integration-clean: ## Clean up integration test environment
+	cd integration && docker compose -f docker-compose.test.yml down -v --rmi local
 
 # Systemd targets
 install-systemd: ## Install systemd service files

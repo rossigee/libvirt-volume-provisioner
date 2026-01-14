@@ -18,6 +18,7 @@ The integration test suite includes:
 - Docker and Docker Compose
 - At least 8GB RAM available for test containers
 - 20GB free disk space for test data
+- Updated container images (automatically pulled on first run)
 
 ## Quick Start
 

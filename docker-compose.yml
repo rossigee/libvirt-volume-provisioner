@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.production
+    image: libvirt-volume-provisioner:latest
     container_name: libvirt-volume-provisioner
     # Privileged access required for libvirt and LVM access
     privileged: true
