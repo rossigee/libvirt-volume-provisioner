@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  libvirt-volume-provisioner:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    container_name: libvirt-volume-provisioner
+    # Privileged access required for libvirt and LVM access
+    privileged: true
+    # Alternative: Use specific capabilities and device access
+    # cap_add:
+    #   - SYS_ADMIN
+    # devices:
+    #   - /dev/mapper:/dev/mapper
+    #   - /dev/dm-*:/dev/dm-*
+    volumes:
+      # Libvirt socket access
+      - /var/run/libvirt:/var/run/libvirt:rw
+      # Image storage (libvirt images pool)
+      - /var/lib/libvirt/images:/var/lib/libvirt/images:rw
+      # LVM device access
+      - /dev/mapper:/dev/mapper:rw
+      # Configuration files
+      - ./config:/etc/libvirt-volume-provisioner:ro
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+      # Logging
+      - /var/log/libvirt-volume-provisioner:/var/log/libvirt-volume-provisioner:rw
+    environment:
+      # Server configuration
+      - LISTEN_ADDR=0.0.0.0
+      - PORT=8080
+
+      # MinIO/S3 configuration
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-https://minio.example.com}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+
+      # LVM configuration
+      - LVM_VOLUME_GROUP=${LVM_VOLUME_GROUP:-vg0}
+
+      # Authentication (optional - can be mounted as files)
+      - CLIENT_CA_CERT=${CLIENT_CA_CERT:-}
+      - SERVER_CERT=${SERVER_CERT:-}
+      - SERVER_KEY=${SERVER_KEY:-}
+      - API_TOKENS_FILE=${API_TOKENS_FILE:-}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/libvirt-volume-provisioner", "--health-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+
+    # Logging
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  default:
+    name: libvirt-network

@@ -1,0 +1,28 @@
+# Libvirt Volume Provisioner Configuration
+# This file contains default configuration values that can be overridden
+# by setting environment variables before starting the service.
+
+# Server Configuration
+# LISTEN_ADDR=127.0.0.1
+# PORT=8080
+
+# MinIO/S3 Configuration
+# MINIO_ENDPOINT=https://minio.example.com
+# MINIO_ACCESS_KEY=your-access-key
+# MINIO_SECRET_KEY=your-secret-key
+
+# LVM Configuration
+# LVM_VOLUME_GROUP=vg0
+
+# Authentication Configuration
+# CLIENT_CA_CERT=/etc/ssl/certs/ca-certificates.crt
+# SERVER_CERT=/etc/ssl/certs/server.crt
+# SERVER_KEY=/etc/ssl/private/server.key
+# API_TOKENS_FILE=/etc/libvirt-volume-provisioner/tokens
+
+# Logging Configuration
+# LOG_LEVEL=info
+
+# Performance Configuration
+# MAX_CONCURRENT_JOBS=2
+# REQUEST_TIMEOUT=300s

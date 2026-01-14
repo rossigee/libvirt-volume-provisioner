@@ -96,19 +96,66 @@ Cancel a running provisioning job.
 
 ## Installation
 
-### Option 1: Debian Repository (Recommended)
+The libvirt-volume-provisioner supports multiple deployment methods to suit different infrastructure preferences.
 
-1. **Add the repository** (see [REPOSITORY-README.md](REPOSITORY-README.md) for detailed instructions):
+### Quick Start
 
-    ```bash
-    # Automated setup
-    curl -fsSL https://raw.githubusercontent.com/rossigee/libvirt-volume-provisioner/main/setup-repo.sh | sudo bash
+#### Option 1: Debian Package (Recommended for Production)
 
-    # Manual setup
-    curl -fsSL https://debs.golder.tech/gpg-key.asc | gpg --dearmor | sudo tee /usr/share/keyrings/golder-tech-archive-keyring.gpg > /dev/null
-    echo "deb [signed-by=/usr/share/keyrings/golder-tech-archive-keyring.gpg] https://debs.golder.tech stable main" | sudo tee /etc/apt/sources.list.d/golder-tech.list
-    sudo apt update
-    ```
+```bash
+# Download and install
+wget https://github.com/rossigee/libvirt-volume-provisioner/releases/download/v0.2.4/libvirt-volume-provisioner_0.2.4_amd64.deb
+sudo apt install ./libvirt-volume-provisioner_0.2.4_amd64.deb
+
+# Configure (edit with your values)
+sudo vi /etc/default/libvirt-volume-provisioner
+
+# Start service
+sudo systemctl enable libvirt-volume-provisioner.socket
+sudo systemctl start libvirt-volume-provisioner.socket
+```
+
+#### Option 2: Docker Container
+
+```bash
+# Clone and setup
+git clone https://github.com/rossigee/libvirt-volume-provisioner.git
+cd libvirt-volume-provisioner
+
+# Configure environment
+cp .env.example .env
+vi .env  # Add your MinIO/S3 credentials
+
+# Start with Docker Compose
+docker-compose up -d
+```
+
+#### Option 3: Build from Source
+
+```bash
+# Clone and build
+git clone https://github.com/rossigee/libvirt-volume-provisioner.git
+cd libvirt-volume-provisioner
+
+# Build and install
+make build-linux
+sudo make install-systemd
+
+# Configure and start
+sudo vi /etc/default/libvirt-volume-provisioner
+sudo systemctl enable libvirt-volume-provisioner.socket
+sudo systemctl start libvirt-volume-provisioner.socket
+```
+
+### Deployment Methods
+
+| Method | Use Case | Pros | Cons |
+|--------|----------|------|------|
+| **Systemd Service** | Production servers, bare metal | Native performance, full access to host resources | Requires root access for installation |
+| **Docker Container** | Containerized infrastructure, development | Easy deployment, isolation | Requires privileged mode for libvirt/LVM access |
+| **Binary Only** | Custom deployments, embedded systems | Maximum flexibility | Manual service management |
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive deployment instructions for each method.
 
 2. **Install the package:**
     ```bash

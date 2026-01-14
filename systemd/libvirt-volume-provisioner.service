@@ -1,0 +1,29 @@
+[Unit]
+Description=Libvirt Volume Provisioner
+Documentation=https://github.com/rossigee/libvirt-volume-provisioner
+After=network.target libvirtd.service
+Requires=libvirtd.service
+
+[Service]
+Type=simple
+User=libvirt-volume-provisioner
+Group=libvirt-qemu
+EnvironmentFile=-/etc/default/libvirt-volume-provisioner
+ExecStart=/usr/bin/libvirt-volume-provisioner
+Restart=always
+RestartSec=5
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/libvirt/images /var/log /tmp
+PrivateTmp=yes
+PrivateDevices=no
+DeviceAllow=/dev/mapper/* rwm
+DeviceAllow=/dev/dm-* rwm
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

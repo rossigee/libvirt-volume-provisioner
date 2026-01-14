@@ -19,6 +19,14 @@ DEB_VERSION ?= 0.2.4
 DEB_ARCH=amd64
 DEB_BUILD_DIR=deb-build
 
+# Help
+.PHONY: help
+help: ## Show this help message
+	@echo 'Usage: make [target]'
+	@echo ''
+	@echo 'Targets:'
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
 # Build the binary
 build:
 	$(GOMOD) tidy
@@ -178,3 +186,38 @@ deps:
 	$(GOGET) github.com/gin-gonic/gin
 	$(GOGET) github.com/google/uuid
 	$(GOGET) github.com/minio/minio-go/v7
+
+# Docker targets
+build-docker: ## Build production Docker image
+	docker build -f Dockerfile.production -t $(BINARY_NAME):latest .
+
+build-docker-dev: ## Build development Docker image
+	docker build -f Dockerfile -t $(BINARY_NAME):dev .
+
+docker-compose-up: ## Start with docker-compose
+	docker-compose up -d
+
+docker-compose-down: ## Stop docker-compose
+	docker-compose down
+
+docker-compose-logs: ## Show docker-compose logs
+	docker-compose logs -f
+
+# Systemd targets
+install-systemd: ## Install systemd service files
+	sudo cp systemd/$(BINARY_NAME).service /etc/systemd/system/
+	sudo cp systemd/$(BINARY_NAME).socket /etc/systemd/system/
+	sudo cp systemd/$(BINARY_NAME).default /etc/default/$(BINARY_NAME)
+	sudo systemctl daemon-reload
+	@echo "Systemd files installed. Run 'sudo systemctl enable $(BINARY_NAME).socket && sudo systemctl start $(BINARY_NAME).socket' to start the service."
+
+uninstall-systemd: ## Remove systemd service files
+	sudo systemctl stop $(BINARY_NAME).socket || true
+	sudo systemctl stop $(BINARY_NAME).service || true
+	sudo systemctl disable $(BINARY_NAME).socket || true
+	sudo systemctl disable $(BINARY_NAME).service || true
+	sudo rm -f /etc/systemd/system/$(BINARY_NAME).service
+	sudo rm -f /etc/systemd/system/$(BINARY_NAME).socket
+	sudo rm -f /etc/default/$(BINARY_NAME)
+	sudo systemctl daemon-reload
+	@echo "Systemd files removed."
