@@ -19,10 +19,15 @@ jobs:
       with:
         go-version: '1.25.5'
 
-    - name: Install golangci-lint
-      run: |
-        curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.7.2
-        echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+     - name: Install system dependencies
+       run: |
+         sudo apt-get update
+         sudo apt-get install -y libvirt-dev pkg-config
+
+     - name: Install golangci-lint
+       run: |
+         curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.7.2
+         echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
     - name: Cache Go modules
       uses: actions/cache@v4
