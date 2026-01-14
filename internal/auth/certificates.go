@@ -45,7 +45,7 @@ func NewValidator() (*Validator, error) {
 func (v *Validator) loadClientCAs() error {
 	caCertPath := os.Getenv("CLIENT_CA_CERT")
 	if caCertPath == "" {
-		caCertPath = "/etc/ssl/certs/client-ca.pem"
+		caCertPath = "/etc/ssl/certs/ca-certificates.crt"
 	}
 
 	if _, err := os.Stat(caCertPath); os.IsNotExist(err) {
@@ -73,7 +73,7 @@ func (v *Validator) loadAPITokens() error {
 	tokenFile := os.Getenv("API_TOKENS_FILE")
 	if tokenFile == "" {
 		//nolint:gosec // Default configuration file path, not credentials
-		tokenFile = "/etc/libvirt-volume-provisioner/api-tokens"
+		tokenFile = "/etc/libvirt-volume-provisioner/tokens"
 	}
 
 	if _, err := os.Stat(tokenFile); os.IsNotExist(err) {

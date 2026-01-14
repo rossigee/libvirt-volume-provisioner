@@ -19,6 +19,7 @@ type JobManager interface {
 	GetJobStatus(jobID string) (*types.StatusResponse, error)
 	CancelJob(jobID string) error
 	GetActiveJobs() int
+	GetJobCacheInfo(jobID string) (cacheHit bool, imagePath string, err error)
 }
 
 // Handler handles HTTP API requests

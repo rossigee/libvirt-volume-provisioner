@@ -10,9 +10,12 @@ import (
 )
 
 func TestNewValidator(t *testing.T) {
-	// Clear any existing client CA path
+	// Ensure no client CA file exists for test
 	_ = os.Unsetenv("CLIENT_CA_CERT")
 	defer func() { _ = os.Unsetenv("CLIENT_CA_CERT") }()
+
+	// Set to non-existent path to ensure CA is not loaded
+	_ = os.Setenv("CLIENT_CA_CERT", "/nonexistent/ca.pem")
 
 	validator, err := NewValidator()
 

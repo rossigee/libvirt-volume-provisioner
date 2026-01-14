@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rossigee/libvirt-volume-provisioner/internal/retry"
+	"github.com/sirupsen/logrus"
 )
 
 // ProgressUpdater interface for updating job progress
@@ -29,7 +30,10 @@ type Manager struct {
 func NewManager(vgName string) (*Manager, error) {
 	// Validate volume group name (prevent path traversal)
 	if vgName == "" {
-		vgName = "data" // Default if not provided
+		vgName = os.Getenv("LVM_VOLUME_GROUP")
+		if vgName == "" {
+			vgName = "vg0" // Generic default
+		}
 	}
 	if strings.ContainsAny(vgName, "/\\") {
 		return nil, fmt.Errorf("invalid volume group name '%s': must not contain path separators", vgName)
@@ -94,13 +98,22 @@ func parseLvmRetryConfig(attemptsStr, backoffStr string) retry.Config {
 }
 
 // CreateVolume creates a new LVM volume with exponential backoff retry
+// If volume exists, validates it matches requirements and reuses if compatible
 func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB int) error {
 	// Check if volume already exists
 	if m.volumeExists(volumeName) {
-		return fmt.Errorf("volume %s already exists", volumeName)
+		// Validate existing volume
+		if err := m.validateExistingVolume(volumeName, sizeGB); err != nil {
+			return fmt.Errorf("existing volume %s is incompatible: %w", volumeName, err)
+		}
+		logrus.WithFields(logrus.Fields{
+			"volume_name": volumeName,
+			"size_gb":     sizeGB,
+		}).Info("Reusing existing compatible volume")
+		return nil
 	}
 
-	// Wrap with retry logic
+	// Create new volume
 	err := retry.WithRetry(ctx, m.retryConfig, func() error {
 		return m.createVolumeOnce(volumeName, sizeGB)
 	})
@@ -149,6 +162,13 @@ func (m *Manager) populateVolumeOnce(imagePath, volumeName, imageType string, up
 	if _, err := exec.Command("test", "-b", devicePath).CombinedOutput(); err != nil {
 		return fmt.Errorf("LVM volume device does not exist: %s", devicePath)
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"volume_name": volumeName,
+		"device_path": devicePath,
+		"image_path":  imagePath,
+		"image_type":  imageType,
+	}).Info("Starting volume population")
 
 	// Convert image format if needed and copy to LVM volume
 	var cmd *exec.Cmd
@@ -253,6 +273,39 @@ func (m *Manager) volumeExists(volumeName string) bool {
 	//nolint:gosec,noctx // Volume name is validated internally
 	cmd := exec.Command("lvs", fmt.Sprintf("%s/%s", m.vgName, volumeName))
 	return cmd.Run() == nil
+}
+
+// validateExistingVolume checks if an existing volume is compatible for reuse
+func (m *Manager) validateExistingVolume(volumeName string, requiredSizeGB int) error {
+	info, err := m.GetVolumeInfo(volumeName)
+	if err != nil {
+		return fmt.Errorf("failed to get volume info: %w", err)
+	}
+
+	// Check size (allow some tolerance for filesystem overhead)
+	requiredSizeBytes := int64(requiredSizeGB) * 1024 * 1024 * 1024
+	actualSizeBytes := info.SizeBytes
+
+	// Allow 5% variance for filesystem/formatting differences
+	sizeTolerance := requiredSizeBytes / 20 // 5%
+	minSize := requiredSizeBytes - sizeTolerance
+	maxSize := requiredSizeBytes + sizeTolerance
+
+	if actualSizeBytes < minSize {
+		return fmt.Errorf("existing volume size %d bytes too small, need at least %d bytes",
+			actualSizeBytes, minSize)
+	}
+	if actualSizeBytes > maxSize {
+		return fmt.Errorf("existing volume size %d bytes too large, maximum allowed %d bytes",
+			actualSizeBytes, maxSize)
+	}
+
+	// Check if volume is active/available
+	if info.Attributes[4] != 'a' && info.Attributes[4] != '-' {
+		return fmt.Errorf("volume state '%c' not suitable for reuse", info.Attributes[4])
+	}
+
+	return nil
 }
 
 // VolumeInfo represents information about an LVM volume

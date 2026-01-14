@@ -1,0 +1,387 @@
+openapi: 3.0.3
+info:
+  title: libvirt-volume-provisioner API
+  description: REST API for provisioning LVM volumes with VM images from MinIO storage
+  version: 1.0.0
+  contact:
+    name: Ross Gee
+    url: https://github.com/rossigee/libvirt-volume-provisioner
+
+servers:
+  - url: http://localhost:8080
+    description: Development server
+  - url: https://provisioner.example.com
+    description: Production server
+
+security:
+  - ApiToken: []
+  - MutualTLS: []
+
+paths:
+  /health:
+    get:
+      summary: Health check endpoint
+      description: Returns the service health status
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /healthz:
+    get:
+      summary: Kubernetes health check endpoint
+      description: Returns the service health status (Kubernetes compatible)
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /livez:
+    get:
+      summary: Kubernetes liveness probe endpoint
+      description: Returns the service health status (Kubernetes compatible)
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /metrics:
+    get:
+      summary: Prometheus metrics endpoint
+      description: Returns Prometheus-formatted metrics for monitoring
+      tags:
+        - Monitoring
+      responses:
+        '200':
+          description: Metrics data
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # HELP libvirt_volume_provisioner_active_jobs Number of currently active jobs
+                  # TYPE libvirt_volume_provisioner_active_jobs gauge
+                  libvirt_volume_provisioner_active_jobs 0
+
+  /api/v1/provision:
+    post:
+      summary: Start volume provisioning job
+      description: |
+        Initiates a volume provisioning job that downloads/caches QCOW2 images from MinIO and creates/reuses LVM volumes for VM use.
+
+        **Volume Behavior:**
+        - Creates new LVM volume if it doesn't exist
+        - Reuses existing volume if compatible (size within ±5% tolerance)
+        - Fails if existing volume is incompatible (wrong size, invalid state)
+      tags:
+        - Provisioning
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProvisionRequest'
+            example:
+              image_url: "https://minio.example.com/images/ubuntu-20.04.qcow2"
+              volume_name: "vm-disk-001"
+              volume_size_gb: 50
+              image_type: "qcow2"
+              correlation_id: "optional-uuid"
+      responses:
+        '202':
+          description: Job accepted for processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProvisionResponse'
+              example:
+                job_id: "550e8400-e29b-41d4-a716-446655440000"
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/status/{job_id}:
+    get:
+      summary: Get provisioning job status
+      description: Retrieves the current status and progress of a provisioning job
+      tags:
+        - Provisioning
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          description: The unique identifier of the provisioning job
+          schema:
+            type: string
+            format: uuid
+            example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        '200':
+          description: Job status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+              examples:
+                running:
+                  summary: Job in progress
+                  value:
+                    job_id: "550e8400-e29b-41d4-a716-446655440000"
+                    status: "running"
+                    progress:
+                      stage: "downloading"
+                      percent: 75.5
+                      bytes_processed: 37748736000
+                      bytes_total: 50000000000
+                    correlation_id: "550e8400-e29b-41d4-a716-446655440000"
+                    created_at: "2024-01-14T10:30:00Z"
+                    updated_at: "2024-01-14T10:35:00Z"
+                completed:
+                  summary: Job completed successfully
+                  value:
+                    job_id: "550e8400-e29b-41d4-a716-446655440000"
+                    status: "completed"
+                    progress:
+                      stage: "finalizing"
+                      percent: 100
+                      bytes_processed: 50000000000
+                      bytes_total: 50000000000
+                    correlation_id: "550e8400-e29b-41d4-a716-446655440000"
+                    cache_hit: true
+                    image_path: "/var/lib/libvirt/images/ubuntu-20.04.qcow2"
+                    created_at: "2024-01-14T10:30:00Z"
+                    updated_at: "2024-01-14T10:40:00Z"
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/cancel/{job_id}:
+    delete:
+      summary: Cancel a provisioning job
+      description: Cancels a running provisioning job if it hasn't completed yet
+      tags:
+        - Provisioning
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          description: The unique identifier of the provisioning job to cancel
+          schema:
+            type: string
+            format: uuid
+            example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        '200':
+          description: Job cancelled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "cancelled"
+                  job_id:
+                    type: string
+                    format: uuid
+                    example: "550e8400-e29b-41d4-a716-446655440000"
+        '400':
+          description: Job cannot be cancelled (already completed/failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    ProvisionRequest:
+      type: object
+      required:
+        - image_url
+        - volume_name
+        - volume_size_gb
+      properties:
+        image_url:
+          type: string
+          format: uri
+          description: URL of the image file in MinIO storage
+          example: "https://minio.example.com/images/ubuntu-20.04.qcow2"
+        volume_name:
+          type: string
+          description: Name for the LVM volume to create
+          example: "vm-disk-001"
+        volume_size_gb:
+          type: integer
+          minimum: 1
+          description: Size of the volume to create in gigabytes
+          example: 50
+        image_type:
+          type: string
+          enum: [qcow2, raw]
+          description: Format of the source image
+          default: "qcow2"
+          example: "qcow2"
+        correlation_id:
+          type: string
+          description: Optional correlation ID for tracking requests across systems
+          example: "optional-uuid"
+
+    ProvisionResponse:
+      type: object
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          description: Unique identifier for the provisioning job
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        status:
+          type: string
+          description: Initial status of the job
+          example: "accepted"
+
+    StatusResponse:
+      type: object
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          description: Unique identifier for the provisioning job
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+          description: Current status of the job
+          example: "running"
+        progress:
+          $ref: '#/components/schemas/ProgressInfo'
+        error:
+          type: string
+          description: Error message if the job failed
+          example: "failed to download image: connection timeout"
+        correlation_id:
+          type: string
+          description: Correlation ID from the original request
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        cache_hit:
+          type: boolean
+          description: Whether the image was served from cache (only present for completed jobs)
+          example: true
+        image_path:
+          type: string
+          description: Path to the cached or downloaded image (only present for completed jobs)
+          example: "/var/lib/libvirt/images/ubuntu-20.04.qcow2"
+        created_at:
+          type: string
+          format: date-time
+          description: When the job was created
+          example: "2024-01-14T10:30:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: When the job was last updated
+          example: "2024-01-14T10:35:00Z"
+
+    ProgressInfo:
+      type: object
+      properties:
+        stage:
+          type: string
+          description: Current stage of the provisioning process
+          example: "downloading"
+        percent:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: Completion percentage for the current stage
+          example: 75.5
+        bytes_processed:
+          type: integer
+          format: int64
+          description: Number of bytes processed so far
+          example: 37748736000
+        bytes_total:
+          type: integer
+          format: int64
+          description: Total number of bytes to process
+          example: 50000000000
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded]
+          description: Overall health status
+          example: "healthy"
+        timestamp:
+          type: string
+          format: date-time
+          description: Current timestamp
+          example: "2024-01-14T10:30:00Z"
+        version:
+          type: string
+          description: Service version
+          example: "1.0.0"
+        uptime:
+          type: string
+          description: Service uptime (may be 'unknown')
+          example: "2h30m45s"
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error type or category
+          example: "invalid request"
+        message:
+          type: string
+          description: Detailed error message
+          example: "image_url and volume_name are required"
+        code:
+          type: integer
+          description: HTTP status code
+          example: 400
+
+  securitySchemes:
+    ApiToken:
+      type: apiKey
+      in: header
+      name: X-API-Token
+      description: API token for authentication (fallback to client certificates)
+    MutualTLS:
+      type: mutualTLS
+      description: Client certificate authentication (primary method)

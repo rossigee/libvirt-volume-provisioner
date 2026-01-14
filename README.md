@@ -17,21 +17,36 @@ The `libvirt-volume-provisioner` runs as a systemd service on hypervisor hosts a
 Client (infrastructure-builder)
     ↓ HTTP API
 libvirt-volume-provisioner (daemon)
-    ↓ Download & Convert
-MinIO → qemu-img convert → LVM Volume
+    ↓ Check Cache & Download
+MinIO (.sha256 checksums) → libvirt Pool Cache → LVM Volume
     ↓
 VM Definition → libvirt → Running VM
 ```
+
+### Image Caching
+
+The provisioner implements intelligent image caching:
+
+- **Checksum-based caching**: Uses SHA256 checksums from MinIO `.sha256` files as cache keys
+- **libvirt storage pools**: Images are cached in libvirt's `images` pool at `/var/lib/libvirt/images/`
+- **Fallback behavior**: Falls back to URL-based caching if checksums aren't available
+- **Cache validation**: Verifies cached images against checksums before use
 
 ## API
 
 ### POST /api/v1/provision
 Start volume provisioning job.
 
+**Behavior:**
+- Downloads and caches QCOW2 images from MinIO to libvirt storage pool
+- Creates or reuses compatible LVM volumes
+- Converts images to raw format for VM use
+- Provides progress tracking and error reporting
+
 **Request:**
 ```json
 {
-  "image_url": "https://minio.golder.lan/vmnode-images/base-standard-20260101074936-base-standard.qcow2",
+  "image_url": "https://minio.example.com/images/ubuntu-20.04.qcow2",
   "volume_name": "itx-master-controlplane-1",
   "volume_size_gb": 50,
   "image_type": "qcow2",
@@ -42,10 +57,14 @@ Start volume provisioning job.
 **Response:**
 ```json
 {
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "accepted"
+  "job_id": "550e8400-e29b-41d4-a716-446655440000"
 }
 ```
+
+**Volume Handling:**
+- **New Volume**: Created if volume doesn't exist
+- **Reuse**: Compatible existing volumes are reused (size validation ±5%)
+- **Error**: Incompatible existing volumes cause job failure
 
 ### GET /api/v1/status/{job_id}
 Get provisioning job status.
@@ -54,14 +73,16 @@ Get provisioning job status.
 ```json
 {
   "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "running",
+  "status": "completed",
   "progress": {
-    "stage": "downloading",
-    "percent": 75.5,
-    "bytes_processed": 37748736000,
+    "stage": "finalizing",
+    "percent": 100,
+    "bytes_processed": 50000000000,
     "bytes_total": 50000000000
   },
-  "correlation_id": "original-id"
+  "correlation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "cache_hit": true,
+  "image_path": "/var/lib/libvirt/images/base-standard.qcow2"
 }
 ```
 
@@ -112,7 +133,7 @@ Cancel a running provisioning job.
 3. **Configuration:**
     ```bash
     # Environment variables
-    export MINIO_ENDPOINT="https://minio.golder.lan"
+    export MINIO_ENDPOINT="https://minio.example.com"
     export MINIO_ACCESS_KEY="your-access-key"
     export MINIO_SECRET_KEY="your-secret-key"
     ```
@@ -127,7 +148,7 @@ Cancel a running provisioning job.
 2. **Create environment file:**
     ```bash
     cat > .env << EOF
-    MINIO_ENDPOINT=https://minio.golder.lan
+    MINIO_ENDPOINT=https://minio.example.com
     MINIO_ACCESS_KEY=your-access-key
     MINIO_SECRET_KEY=your-secret-key
     PORT=8080
@@ -237,11 +258,11 @@ The GitHub Actions workflow will automatically:
 |----------|-------------|---------|
 | `PORT` | HTTP server port | `8080` |
 | `HOST` | HTTP server host | `0.0.0.0` |
-| `MINIO_ENDPOINT` | MinIO server URL | `https://minio.golder.lan` |
+| `MINIO_ENDPOINT` | MinIO server URL | `https://minio.example.com` |
 | `MINIO_ACCESS_KEY` | MinIO access key | Required |
 | `MINIO_SECRET_KEY` | MinIO secret key | Required |
-| `CLIENT_CA_CERT` | Client CA certificate path | `/etc/ssl/certs/client-ca.pem` |
-| `API_TOKENS_FILE` | API tokens file path | `/etc/libvirt-volume-provisioner/api-tokens` |
+| `CLIENT_CA_CERT` | Client CA certificate path | `/etc/ssl/certs/ca-certificates.crt` |
+| `API_TOKENS_FILE` | API tokens file path | `/etc/libvirt-volume-provisioner/tokens` |
 
 ### Certificate Setup
 
@@ -253,7 +274,7 @@ openssl genrsa -out client-ca.key 4096
 openssl req -new -x509 -days 365 -key client-ca.key -sha256 -out client-ca.crt
 
 # Install on provisioner host
-sudo cp client-ca.crt /etc/ssl/certs/client-ca.pem
+sudo cp client-ca.crt /etc/ssl/certs/ca-certificates.crt
 sudo systemctl restart libvirt-volume-provisioner
 ```
 
@@ -280,7 +301,7 @@ make docker-run     # Run in Docker container
 
 ```bash
 # Set environment
-export MINIO_ENDPOINT="https://minio.golder.lan"
+export MINIO_ENDPOINT="https://minio.example.com"
 export MINIO_ACCESS_KEY="..."
 export MINIO_SECRET_KEY="..."
 

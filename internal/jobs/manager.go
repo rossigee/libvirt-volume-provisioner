@@ -6,10 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/lvm"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/minio"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
@@ -24,6 +27,8 @@ type Job struct {
 	Request    types.ProvisionRequest
 	Progress   *types.ProgressInfo
 	Error      error
+	CacheHit   bool
+	ImagePath  string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 	cancelFunc context.CancelFunc
@@ -44,6 +49,7 @@ func (j *Job) UpdateProgress(stage string, percent float64, bytesProcessed, byte
 type Manager struct {
 	minioClient *minio.Client
 	lvmManager  *lvm.Manager
+	libvirtPool *libvirt.PoolManager
 	store       *storage.Store
 	jobs        map[string]*Job
 	semaphore   chan struct{} // Limits concurrent operations
@@ -51,10 +57,12 @@ type Manager struct {
 }
 
 // NewManager creates a new job manager.
-func NewManager(minioClient *minio.Client, lvmManager *lvm.Manager, store *storage.Store) *Manager {
+func NewManager(minioClient *minio.Client, lvmManager *lvm.Manager,
+	libvirtPool *libvirt.PoolManager, store *storage.Store) *Manager {
 	return &Manager{
 		minioClient: minioClient,
 		lvmManager:  lvmManager,
+		libvirtPool: libvirtPool,
 		store:       store,
 		jobs:        make(map[string]*Job),
 		semaphore:   make(chan struct{}, 2), // Max 2 concurrent operations
@@ -172,6 +180,12 @@ func (m *Manager) GetJobStatus(jobID string) (*types.StatusResponse, error) {
 		response.Error = job.Error.Error()
 	}
 
+	// Include cache information for completed jobs
+	if job.Status == types.StatusCompleted {
+		response.CacheHit = &job.CacheHit
+		response.ImagePath = job.ImagePath
+	}
+
 	return response, nil
 }
 
@@ -244,17 +258,14 @@ func (m *Manager) provisionVolume(ctx context.Context, job *Job) error {
 		Percent: 0,
 	}
 
-	// Step 1: Download image from MinIO
-	job.Progress.Stage = "downloading"
-	job.Progress.Percent = 10
+	// Step 1: Check image cache or download
+	job.Progress.Stage = "checking_cache"
+	job.Progress.Percent = 5
 
-	tempPath, err := m.minioClient.DownloadImage(ctx, req.ImageURL, job)
+	imagePath, err := m.getOrDownloadImage(ctx, req, job)
 	if err != nil {
-		return fmt.Errorf("failed to download image: %w", err)
+		return fmt.Errorf("failed to get image: %w", err)
 	}
-	defer func() {
-		_ = m.minioClient.Cleanup(tempPath) // Cleanup errors are not critical
-	}()
 
 	// Step 2: Create LVM volume
 	job.Progress.Stage = "creating_volume"
@@ -289,7 +300,7 @@ func (m *Manager) provisionVolume(ctx context.Context, job *Job) error {
 	job.Progress.Stage = "converting"
 	job.Progress.Percent = 75
 
-	if err := m.lvmManager.PopulateVolume(ctx, tempPath, req.VolumeName, req.ImageType, job); err != nil {
+	if err := m.lvmManager.PopulateVolume(ctx, imagePath, req.VolumeName, req.ImageType, job); err != nil {
 		return fmt.Errorf("failed to populate volume: %w", err)
 	}
 
@@ -298,6 +309,161 @@ func (m *Manager) provisionVolume(ctx context.Context, job *Job) error {
 	job.Progress.Percent = 100
 
 	return nil
+}
+
+// getOrDownloadImage checks cache or downloads image and returns the path
+func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionRequest, job *Job) (string, error) {
+	// Get checksum from MinIO .sha256 file
+	checksum, err := m.getImageChecksum(ctx, req.ImageURL)
+	if err != nil {
+		logrus.WithError(err).Warn("Failed to get image checksum from MinIO, using URL as cache key")
+		checksum = req.ImageURL // Fallback to URL
+	}
+
+	// Check if image is cached using checksum as key
+	cachedImage, err := m.libvirtPool.CheckCache(checksum)
+	if err != nil {
+		logrus.WithError(err).Warn("Failed to check image cache, proceeding with download")
+	}
+
+	if cachedImage != nil {
+		logrus.WithFields(logrus.Fields{
+			"job_id":      job.ID,
+			"image_url":   req.ImageURL,
+			"checksum":    checksum,
+			"cached_path": cachedImage.Path,
+			"cache_hit":   true,
+		}).Info("Using cached image")
+		job.CacheHit = true
+		job.ImagePath = cachedImage.Path
+		return cachedImage.Path, nil
+	}
+
+	if cachedImage != nil {
+		logrus.WithFields(logrus.Fields{
+			"job_id":      job.ID,
+			"image_url":   req.ImageURL,
+			"cached_path": cachedImage.Path,
+			"cache_hit":   true,
+		}).Info("Using cached image")
+		return cachedImage.Path, nil
+	}
+
+	// Image not cached, need to download
+	logrus.WithFields(logrus.Fields{
+		"job_id":    job.ID,
+		"image_url": req.ImageURL,
+		"cache_hit": false,
+	}).Info("Image not cached, downloading")
+
+	// Get image size first (needed for libvirt volume allocation)
+	imageSize, err := m.getImageSize(ctx, req.ImageURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to get image size: %w", err)
+	}
+
+	// Generate image name from URL
+	imageName := libvirt.GetImageNameFromURL(req.ImageURL)
+
+	// Allocate space in libvirt pool
+	imagePath, err := m.libvirtPool.AllocateImage(imageName, imageSize)
+	if err != nil {
+		return "", fmt.Errorf("failed to allocate libvirt image: %w", err)
+	}
+
+	// Download image to allocated path
+	job.Progress.Stage = "downloading"
+	job.Progress.Percent = 10
+
+	if err := m.minioClient.DownloadImageToPath(ctx, req.ImageURL, imagePath, job); err != nil {
+		// Cleanup failed allocation
+		_ = m.libvirtPool.DeleteImage(imagePath)
+		return "", fmt.Errorf("failed to download image: %w", err)
+	}
+
+	// If we don't have a checksum from MinIO, calculate it locally
+	if checksum == "" {
+		var err error
+		checksum, err = libvirt.CalculateChecksum(imagePath)
+		if err != nil {
+			logrus.WithError(err).Warn("Failed to calculate checksum, cache may not work properly")
+			checksum = req.ImageURL // Fallback to URL as cache key
+		}
+	}
+
+	if err := m.libvirtPool.CreateCacheEntry(imagePath, checksum); err != nil {
+		logrus.WithError(err).Warn("Failed to create cache entry")
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"job_id":     job.ID,
+		"image_path": imagePath,
+		"checksum":   checksum,
+	}).Info("Image downloaded and cached")
+
+	job.CacheHit = false
+	job.ImagePath = imagePath
+	return imagePath, nil
+}
+
+// getImageChecksum retrieves the SHA256 checksum from MinIO .sha256 file
+func (m *Manager) getImageChecksum(ctx context.Context, imageURL string) (string, error) {
+	// Parse the image URL to extract bucket and object
+	u, err := url.Parse(imageURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid image URL: %w", err)
+	}
+
+	pathParts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	if len(pathParts) < 2 {
+		return "", fmt.Errorf("invalid image URL path: %s", u.Path)
+	}
+
+	bucketName := pathParts[0]
+	imageObjectName := strings.Join(pathParts[1:], "/")
+	checksumObjectName := imageObjectName + ".sha256"
+
+	// Try to get the checksum file content
+	checksumData, err := m.minioClient.GetObjectContent(ctx, bucketName, checksumObjectName)
+	if err != nil {
+		return "", fmt.Errorf("checksum file not found or unreadable: %w", err)
+	}
+
+	checksum := strings.TrimSpace(string(checksumData))
+	if len(checksum) != 64 {
+		return "", fmt.Errorf("invalid checksum format: expected 64 characters, got %d", len(checksum))
+	}
+
+	return checksum, nil
+}
+
+// getImageSize gets the size of an image from MinIO without downloading
+func (m *Manager) getImageSize(ctx context.Context, imageURL string) (uint64, error) {
+	// Parse the image URL to extract bucket and object
+	u, err := url.Parse(imageURL)
+	if err != nil {
+		return 0, fmt.Errorf("invalid image URL: %w", err)
+	}
+
+	pathParts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	if len(pathParts) < 2 {
+		return 0, fmt.Errorf("invalid image URL path: %s", u.Path)
+	}
+
+	bucketName := pathParts[0]
+	objectName := strings.Join(pathParts[1:], "/")
+
+	// Get object info
+	objInfo, err := m.minioClient.StatObject(ctx, bucketName, objectName)
+	if err != nil {
+		return 0, fmt.Errorf("failed to stat object: %w", err)
+	}
+
+	// Safe conversion from int64 to uint64 (MinIO sizes shouldn't be negative)
+	if objInfo.Size < 0 {
+		return 0, fmt.Errorf("invalid object size: %d", objInfo.Size)
+	}
+	return uint64(objInfo.Size), nil
 }
 
 // GetActiveJobs returns the count of active jobs
@@ -312,6 +478,23 @@ func (m *Manager) GetActiveJobs() int {
 		}
 	}
 	return count
+}
+
+// GetJobCacheInfo returns cache information for a completed job
+func (m *Manager) GetJobCacheInfo(jobID string) (bool, string, error) {
+	m.mu.RLock()
+	job, exists := m.jobs[jobID]
+	m.mu.RUnlock()
+
+	if !exists {
+		return false, "", fmt.Errorf("job not found: %s", jobID)
+	}
+
+	if job.Status != types.StatusCompleted {
+		return false, "", fmt.Errorf("job not completed: %s", job.Status)
+	}
+
+	return job.CacheHit, job.ImagePath, nil
 }
 
 // CleanupCompletedJobs removes old completed jobs (keep last 100)

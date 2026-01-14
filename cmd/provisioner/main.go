@@ -16,6 +16,7 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/internal/api"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/auth"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/jobs"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/lvm"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/minio"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
@@ -29,9 +30,9 @@ var (
 )
 
 func main() {
-	// Configure logrus
-	logrus.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp: true,
+	// Configure logrus for structured JSON logging
+	logrus.SetFormatter(&logrus.JSONFormatter{
+		TimestampFormat: time.RFC3339,
 	})
 	logrus.SetLevel(logrus.InfoLevel)
 
@@ -90,7 +91,14 @@ func main() {
 	}
 	logrus.Info("Storage initialized successfully")
 
-	jobManager := jobs.NewManager(minioClient, lvmManager, store)
+	logrus.Info("Initializing libvirt pool manager...")
+	libvirtPool, err := libvirt.NewPoolManager("images")
+	if err != nil {
+		logrus.WithError(err).Fatal("Failed to initialize libvirt pool manager")
+	}
+	logrus.Info("Libvirt pool manager initialized successfully")
+
+	jobManager := jobs.NewManager(minioClient, lvmManager, libvirtPool, store)
 
 	// Initialize Gin router
 	router := gin.New()
@@ -120,6 +128,21 @@ func main() {
 			IdleTimeout:       60 * time.Second,
 		}
 	} else {
+		// Load server certificate and key
+		serverCertPath := os.Getenv("SERVER_CERT")
+		if serverCertPath == "" {
+			serverCertPath = "/etc/ssl/certs/server.crt"
+		}
+		serverKeyPath := os.Getenv("SERVER_KEY")
+		if serverKeyPath == "" {
+			serverKeyPath = "/etc/ssl/private/server.key"
+		}
+
+		cert, err := tls.LoadX509KeyPair(serverCertPath, serverKeyPath)
+		if err != nil {
+			logrus.WithError(err).Fatal("Failed to load server certificate")
+		}
+
 		// Run HTTPS server when client CA is configured
 		srv = &http.Server{
 			Addr:              fmt.Sprintf("%s:%s", host, port),
@@ -129,9 +152,10 @@ func main() {
 			WriteTimeout:      15 * time.Second,
 			IdleTimeout:       60 * time.Second,
 			TLSConfig: &tls.Config{
-				ClientAuth: tls.RequireAndVerifyClientCert,
-				ClientCAs:  authValidator.GetClientCAs(),
-				MinVersion: tls.VersionTLS12,
+				Certificates: []tls.Certificate{cert},
+				ClientAuth:   tls.VerifyClientCertIfGiven, // Optional client certs
+				ClientCAs:    authValidator.GetClientCAs(),
+				MinVersion:   tls.VersionTLS12,
 			},
 		}
 	}

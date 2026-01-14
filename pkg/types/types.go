@@ -16,7 +16,9 @@ type ProvisionRequest struct {
 
 // ProvisionResponse represents the response to a provisioning request.
 type ProvisionResponse struct {
-	JobID string `json:"job_id"`
+	JobID     string `json:"job_id"`
+	CacheHit  bool   `json:"cache_hit,omitempty"`
+	ImagePath string `json:"image_path,omitempty"`
 }
 
 // JobStatus represents the status of a provisioning job.
@@ -49,6 +51,8 @@ type StatusResponse struct {
 	Progress      *ProgressInfo `json:"progress,omitempty"`
 	Error         string        `json:"error,omitempty"`
 	CorrelationID string        `json:"correlation_id,omitempty"`
+	CacheHit      *bool         `json:"cache_hit,omitempty"`
+	ImagePath     string        `json:"image_path,omitempty"`
 	CreatedAt     time.Time     `json:"created_at"`
 	UpdatedAt     time.Time     `json:"updated_at"`
 }

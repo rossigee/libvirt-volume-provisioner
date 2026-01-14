@@ -1,4 +1,3 @@
-//nolint:revive
 package api
 
 import (
@@ -41,6 +40,10 @@ func (m *MockJobManager) CancelJob(_ string) error {
 
 func (m *MockJobManager) GetActiveJobs() int {
 	return 0
+}
+
+func (m *MockJobManager) GetJobCacheInfo(_ string) (bool, string, error) {
+	return false, "", nil
 }
 
 func TestNewHandler(t *testing.T) {
