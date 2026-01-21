@@ -105,8 +105,8 @@ The libvirt-volume-provisioner supports multiple deployment methods to suit diff
 
 ```bash
 # Download and install
-wget https://github.com/rossigee/libvirt-volume-provisioner/releases/download/v0.2.5/libvirt-volume-provisioner_0.2.5_amd64.deb
-sudo apt install ./libvirt-volume-provisioner_0.2.5_amd64.deb
+wget https://github.com/rossigee/libvirt-volume-provisioner/releases/download/v0.2.7/libvirt-volume-provisioner_0.2.7_amd64.deb
+sudo apt install ./libvirt-volume-provisioner_0.2.7_amd64.deb
 
 # Configure (edit with your values)
 sudo vi /etc/default/libvirt-volume-provisioner
@@ -244,7 +244,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive deployment instructions for
 
 2. **Install the package:**
     ```bash
-    sudo dpkg -i libvirt-volume-provisioner_0.1.0_amd64.deb
+    sudo dpkg -i libvirt-volume-provisioner_0.2.7_amd64.deb
     sudo apt-get install -f  # Install any missing dependencies
     ```
 
