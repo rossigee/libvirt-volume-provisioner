@@ -25,7 +25,7 @@ go.work
 libvirt-volume-provisioner
 libvirt-volume-provisioner_unix
 libvirt-volume-provisioner_*
-provisioner
+./provisioner
 *.deb
 *.deb.*
 *.rpm
