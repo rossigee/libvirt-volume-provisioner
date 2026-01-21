@@ -66,13 +66,13 @@ jobs:
 
         # Tag and push production image
         docker tag libvirt-volume-provisioner:latest \
-          ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:latest
+          ghcr.io/${{ github.repository }}:latest
         docker tag libvirt-volume-provisioner:latest \
-          ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:v${VERSION}
+          ghcr.io/${{ github.repository }}:v${VERSION}
 
         # Push images
-        docker push ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:latest
-        docker push ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:v${VERSION}
+        docker push ghcr.io/${{ github.repository }}:latest
+        docker push ghcr.io/${{ github.repository }}:v${VERSION}
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1

@@ -66,10 +66,10 @@ jobs:
       run: |
         # Tag and push production image
         docker tag libvirt-volume-provisioner:latest \
-          ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:latest
+          ghcr.io/${{ github.repository }}:latest
         docker tag libvirt-volume-provisioner:latest \
-          ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:${{ github.sha }}
+          ghcr.io/${{ github.repository }}:${{ github.sha }}
 
         # Push images
-        docker push ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:latest
-        docker push ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:${{ github.sha }}
+        docker push ghcr.io/${{ github.repository }}:latest
+        docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
