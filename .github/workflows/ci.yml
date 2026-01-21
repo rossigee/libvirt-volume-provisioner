@@ -52,7 +52,6 @@ jobs:
     - name: Build Docker images
       run: |
         make build-docker
-        make build-docker-dev
 
     - name: Log in to GitHub Container Registry
       if: github.ref == 'refs/heads/master'
@@ -63,7 +62,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Push Docker images to GHCR
-      if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+      if: github.ref == 'refs/heads/master'
       run: |
         # Tag and push production image
         docker tag libvirt-volume-provisioner:latest \
@@ -71,14 +70,6 @@ jobs:
         docker tag libvirt-volume-provisioner:latest \
           ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:${{ github.sha }}
 
-        # Tag and push development image
-        docker tag libvirt-volume-provisioner:dev \
-          ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:dev
-        docker tag libvirt-volume-provisioner:dev \
-          ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:dev-${{ github.sha }}
-
-        # Push all images
+        # Push images
         docker push ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:latest
         docker push ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:${{ github.sha }}
-        docker push ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:dev
-        docker push ghcr.io/${{ github.repository }}/libvirt-volume-provisioner:dev-${{ github.sha }}
