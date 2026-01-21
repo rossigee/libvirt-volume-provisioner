@@ -42,7 +42,7 @@ The service requires access to:
 
 ```bash
 # Download and install the .deb package
-sudo dpkg -i libvirt-volume-provisioner_0.2.4_amd64.deb
+sudo dpkg -i libvirt-volume-provisioner_0.2.5_amd64.deb
 sudo apt-get install -f  # Install dependencies if needed
 ```
 
@@ -235,7 +235,7 @@ curl http://localhost:8080/health
 {
   "status": "healthy",
   "timestamp": "2024-01-14T10:30:00Z",
-  "version": "0.2.4"
+  "version": "0.2.5"
 }
 ```
 
