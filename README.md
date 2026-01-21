@@ -42,6 +42,7 @@ Start volume provisioning job.
 - Creates or reuses compatible LVM volumes
 - Converts images to raw format for VM use
 - Provides progress tracking and error reporting
+- Implements automatic rollback: cleans up partially created volumes on failure
 
 **Request:**
 ```json

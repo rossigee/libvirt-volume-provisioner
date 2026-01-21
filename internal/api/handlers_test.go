@@ -104,6 +104,7 @@ func TestHealthCheck(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "healthy")
+	assert.Contains(t, w.Body.String(), "test-version")
 }
 
 func TestProvisionVolume_InvalidJSON(t *testing.T) {

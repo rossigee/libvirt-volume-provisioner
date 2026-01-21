@@ -112,9 +112,12 @@ func (s *Store) SaveJob(ctx context.Context, record *JobRecord) error {
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
+	committed := false
 	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil {
-			logrus.WithError(rollbackErr).Warn("Failed to rollback transaction")
+		if !committed {
+			if rollbackErr := tx.Rollback(); rollbackErr != nil {
+				logrus.WithError(rollbackErr).Warn("Failed to rollback transaction")
+			}
 		}
 	}()
 
@@ -168,6 +171,7 @@ func (s *Store) SaveJob(ctx context.Context, record *JobRecord) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
+	committed = true
 
 	return nil
 }

@@ -48,11 +48,11 @@ func (j *Job) UpdateProgress(stage string, percent float64, bytesProcessed, byte
 // Manager manages volume provisioning jobs.
 type Manager struct {
 	minioClient *minio.Client
+	jobs        map[string]*Job
 	lvmManager  *lvm.Manager
 	libvirtPool *libvirt.PoolManager
 	store       *storage.Store
-	jobs        map[string]*Job
-	semaphore   chan struct{} // Limits concurrent operations
+	semaphore   chan struct{}
 	mu          sync.RWMutex
 }
 
@@ -238,7 +238,7 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 	}()
 
 	// Execute provisioning steps
-	err := m.provisionVolume(ctx, job)
+	err := m.ProvisionVolume(ctx, job)
 	if err != nil {
 		job.Status = types.StatusFailed
 		job.Error = err
@@ -248,9 +248,13 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 	job.Status = types.StatusCompleted
 }
 
-// provisionVolume performs the actual volume provisioning
-func (m *Manager) provisionVolume(ctx context.Context, job *Job) error {
+// ProvisionVolume performs the actual volume provisioning
+func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	req := job.Request
+
+	// Track provisioning state for rollback
+	volumeCreated := false
+	provisionFailed := false
 
 	// Update progress
 	job.Progress = &types.ProgressInfo{
@@ -272,13 +276,14 @@ func (m *Manager) provisionVolume(ctx context.Context, job *Job) error {
 	job.Progress.Percent = 50
 
 	if err := m.lvmManager.CreateVolume(ctx, req.VolumeName, req.VolumeSizeGB); err != nil {
+		provisionFailed = true
 		return fmt.Errorf("failed to create volume: %w", err)
 	}
-	volumeCreated := true
+	volumeCreated = true
 
 	// Rollback defer: Delete volume if provisioning fails after creation
 	defer func() {
-		if volumeCreated && job.Status == types.StatusFailed {
+		if volumeCreated && provisionFailed {
 			logrus.WithFields(logrus.Fields{
 				"job_id":      job.ID,
 				"volume_name": req.VolumeName,
@@ -301,6 +306,7 @@ func (m *Manager) provisionVolume(ctx context.Context, job *Job) error {
 	job.Progress.Percent = 75
 
 	if err := m.lvmManager.PopulateVolume(ctx, imagePath, req.VolumeName, req.ImageType, job); err != nil {
+		provisionFailed = true
 		return fmt.Errorf("failed to populate volume: %w", err)
 	}
 
