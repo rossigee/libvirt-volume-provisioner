@@ -21,15 +21,16 @@ RUN go mod download
 COPY . .
 
 # Build the binary with CGO enabled for libvirt
+# Note: libvirt cannot be statically linked due to plugin architecture
 RUN CGO_ENABLED=1 GOOS=linux go build \
     -a -installsuffix cgo \
     -tags netgo \
-    -ldflags '-w -extldflags "-static"' \
+    -ldflags '-w' \
     -o libvirt-volume-provisioner \
     ./cmd/provisioner
 
-# Final stage - distroless for security
-FROM gcr.io/distroless/static-debian12
+# Final stage - distroless for security (dynamic linking for libvirt)
+FROM gcr.io/distroless/base-debian12
 
 # Copy the binary from builder stage
 COPY --from=builder /app/libvirt-volume-provisioner /usr/local/bin/libvirt-volume-provisioner
