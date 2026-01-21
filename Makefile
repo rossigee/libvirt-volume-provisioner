@@ -219,6 +219,11 @@ integration-test: ## Run integration tests
 integration-clean: ## Clean up integration test environment
 	cd integration && docker compose -f docker-compose.test.yml down -v --rmi local
 
+# Deploy to VM hosts
+deploy: ## Deploy .deb package to configured VM hosts
+	@echo "Deploying $(DEB_NAME)_$(DEB_VERSION)_$(DEB_ARCH).deb to VM hosts..."
+	@./scripts/deploy-to-hosts.sh $(DEB_NAME)_$(DEB_VERSION)_$(DEB_ARCH).deb
+
 # Systemd targets
 install-systemd: ## Install systemd service files
 	sudo cp systemd/$(BINARY_NAME).service /etc/systemd/system/
