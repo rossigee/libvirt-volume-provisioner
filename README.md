@@ -187,9 +187,35 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive deployment instructions for
 
 ### Option 2: Docker Installation
 
+#### Using Pre-built Images (Recommended)
+
+1. **Pull and run from GitHub Container Registry:**
+    ```bash
+    docker run -d \
+      --name libvirt-volume-provisioner \
+      --privileged \
+      -v /var/run/libvirt:/var/run/libvirt:rw \
+      -v /var/lib/libvirt/images:/var/lib/libvirt/images:rw \
+      -v /dev/mapper:/dev/mapper:rw \
+      -p 8080:8080 \
+      -e MINIO_ENDPOINT=https://minio.example.com \
+      -e MINIO_ACCESS_KEY=your-access-key \
+      -e MINIO_SECRET_KEY=your-secret-key \
+      -e LVM_VOLUME_GROUP=vg0 \
+      ghcr.io/rossigee/libvirt-volume-provisioner:latest
+    ```
+
+    **Available Tags:**
+    - `latest` - Latest production build
+    - `v{X.Y.Z}` - Specific version releases
+    - `dev` - Development builds
+    - `{commit-sha}` - Specific commit builds
+
+#### Building from Source
+
 1. **Build the Docker image:**
     ```bash
-    make docker-build
+    make build-docker
     ```
 
 2. **Create environment file:**
@@ -205,7 +231,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive deployment instructions for
 
 3. **Run the container:**
     ```bash
-    make docker-run
+    make docker-compose-up
     ```
 
 ### Option 3: Ubuntu .deb Package
