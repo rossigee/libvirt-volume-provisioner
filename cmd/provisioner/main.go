@@ -107,7 +107,7 @@ func main() {
 	router.Use(gin.Recovery())
 
 	// Initialize API handlers
-	apiHandler := api.NewHandler(jobManager)
+	apiHandler := api.NewHandler(jobManager, version)
 
 	// Setup routes (includes auth middleware for API routes only)
 	api.SetupRoutes(router, apiHandler, authValidator.Middleware())

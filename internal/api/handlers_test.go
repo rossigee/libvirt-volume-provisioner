@@ -48,16 +48,17 @@ func (m *MockJobManager) GetJobCacheInfo(_ string) (bool, string, error) {
 
 func TestNewHandler(t *testing.T) {
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager)
+	handler := NewHandler(mockManager, "test-version")
 
 	assert.NotNil(t, handler)
 	assert.Equal(t, mockManager, handler.jobManager)
+	assert.Equal(t, "test-version", handler.version)
 }
 
 func TestSetupRoutes(t *testing.T) {
 	router := gin.New()
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager)
+	handler := NewHandler(mockManager, "test-version")
 
 	// Mock auth middleware
 	authMiddleware := func(c *gin.Context) {
@@ -88,7 +89,7 @@ func TestSetupRoutes(t *testing.T) {
 func TestHealthCheck(t *testing.T) {
 	router := gin.New()
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager)
+	handler := NewHandler(mockManager, "test-version")
 
 	// Mock auth middleware
 	authMiddleware := func(c *gin.Context) {
@@ -108,7 +109,7 @@ func TestHealthCheck(t *testing.T) {
 func TestProvisionVolume_InvalidJSON(t *testing.T) {
 	router := gin.New()
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager)
+	handler := NewHandler(mockManager, "test-version")
 
 	// Mock auth middleware
 	authMiddleware := func(c *gin.Context) {
@@ -131,7 +132,7 @@ func TestProvisionVolume_InvalidJSON(t *testing.T) {
 func TestProvisionVolume_MissingFields(t *testing.T) {
 	router := gin.New()
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager)
+	handler := NewHandler(mockManager, "test-version")
 
 	// Mock auth middleware
 	authMiddleware := func(c *gin.Context) {
@@ -155,7 +156,7 @@ func TestProvisionVolume_MissingFields(t *testing.T) {
 func TestProvisionVolume_ValidRequest(t *testing.T) {
 	router := gin.New()
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager)
+	handler := NewHandler(mockManager, "test-version")
 
 	// Mock auth middleware
 	authMiddleware := func(c *gin.Context) {

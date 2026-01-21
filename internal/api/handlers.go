@@ -25,6 +25,7 @@ type JobManager interface {
 // Handler handles HTTP API requests
 type Handler struct {
 	jobManager JobManager
+	version    string
 }
 
 // Metrics
@@ -61,9 +62,10 @@ func init() {
 }
 
 // NewHandler creates a new API handler
-func NewHandler(jobManager JobManager) *Handler {
+func NewHandler(jobManager JobManager, version string) *Handler {
 	return &Handler{
 		jobManager: jobManager,
+		version:    version,
 	}
 }
 
@@ -206,7 +208,7 @@ func (h *Handler) HealthCheck(c *gin.Context) {
 	response := types.HealthResponse{
 		Status:    "healthy",
 		Timestamp: time.Now(),
-		Version:   "1.0.0",
+		Version:   h.version,
 		Uptime:    "unknown", // Could be implemented with start time tracking
 	}
 
