@@ -3,6 +3,7 @@ Description=Libvirt Volume Provisioner
 Documentation=https://github.com/rossigee/libvirt-volume-provisioner
 After=network.target libvirtd.service
 Requires=libvirtd.service
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -10,17 +11,27 @@ User=libvirt-volume-provisioner
 Group=libvirt-qemu
 EnvironmentFile=-/etc/default/libvirt-volume-provisioner
 ExecStart=/usr/bin/libvirt-volume-provisioner
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+
 # Security hardening
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/libvirt/images /var/log /tmp
+ReadWritePaths=/var/lib/libvirt /var/log/libvirt-volume-provisioner /etc/libvirt-volume-provisioner /tmp
 PrivateTmp=yes
 PrivateDevices=no
 DeviceAllow=/dev/mapper/* rwm
 DeviceAllow=/dev/dm-* rwm
+
+# Resource limits
+MemoryMax=512M
+LimitNOFILE=65536
+CPUQuota=50%
+
 # Logging
 StandardOutput=journal
 StandardError=journal
