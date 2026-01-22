@@ -352,6 +352,54 @@ sudo cp client-ca.crt /etc/ssl/certs/ca-certificates.crt
 sudo systemctl restart libvirt-volume-provisioner
 ```
 
+### Monitoring Setup
+
+#### Prometheus ServiceMonitor
+
+For Kubernetes deployments with Prometheus Operator:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: libvirt-volume-provisioner
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: libvirt-volume-provisioner
+  endpoints:
+  - port: https
+    path: /metrics
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+    bearerTokenSecret:
+      name: provisioner-api-tokens
+      key: token
+```
+
+#### Alerting Rules
+
+Key alerting rules for operational monitoring:
+
+```yaml
+# Service down alerts
+- alert: VolumeProvisionerDown
+  expr: up{job="libvirt-volume-provisioner"} == 0
+  for: 5m
+
+# Error rate monitoring
+- alert: VolumeProvisionerHighErrorRate
+  expr: rate(libvirt_volume_provisioner_requests_total{status=~"5.."}[5m]) > 0.1
+  for: 10m
+
+# Job failure alerts
+- alert: VolumeProvisionerJobFailures
+  expr: increase(libvirt_volume_provisioner_jobs_total{status="failed"}[10m]) > 5
+  for: 5m
+```
+
 ## Development
 
 ### Building
@@ -396,9 +444,39 @@ The provisioner integrates with the `infrastructure-builder` tool:
 
 ### Monitoring
 
-- **Health endpoint**: `GET /health`
-- **Prometheus metrics**: Available on `/metrics` (optional)
-- **Structured logging**: JSON format with correlation IDs
+#### Health & Metrics
+
+- **Health endpoints**:
+  - `GET /health` - Basic health check
+  - `GET /healthz` - Kubernetes health check (compatible)
+  - `GET /livez` - Kubernetes liveness probe
+
+- **Prometheus metrics** (`GET /metrics`):
+  - `libvirt_volume_provisioner_requests_total` - HTTP request counts by endpoint/method/status
+  - `libvirt_volume_provisioner_jobs_total` - Job counts by status (started, completed, failed)
+  - `libvirt_volume_provisioner_active_jobs` - Currently active provisioning jobs
+  - Go runtime metrics (GC, goroutines, memory usage)
+
+#### Alerting
+
+Comprehensive alerting rules are configured for:
+
+- **Service Health**: Alerts when provisioner service is down
+- **Error Rates**: Triggers on high 5xx error rates (>10% over 5 minutes)
+- **Job Failures**: Alerts on multiple failed provisioning jobs (>5 failures in 10 minutes)
+- **Performance**: Warns on high active job counts (>10 concurrent jobs)
+
+#### Logging
+
+- **Structured logging**: JSON format with correlation IDs for request tracing
+- **Log levels**: Configurable (debug, info, warn, error)
+- **Integration**: Compatible with Loki/Promtail for centralized aggregation
+
+#### Service Monitoring
+
+- **Prometheus ServiceMonitor**: Automatic metrics collection from all provisioner instances
+- **Grafana dashboards**: Visualization panels for key metrics and performance indicators
+- **Distributed tracing**: OpenTelemetry integration for request tracing across services
 
 ## Security
 

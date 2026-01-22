@@ -241,9 +241,83 @@ curl http://localhost:8080/health
 
 ### Metrics
 
+#### Prometheus Metrics Endpoint
+
 ```bash
-# Prometheus metrics endpoint
-curl http://localhost:8080/metrics
+# Access metrics (requires authentication)
+curl -H "Authorization: Bearer <token>" https://localhost:3443/metrics
+```
+
+#### Available Metrics
+
+- **HTTP Request Metrics**:
+  - `libvirt_volume_provisioner_requests_total{endpoint,method,status}`
+  - Tracks all API requests by endpoint, HTTP method, and response status
+
+- **Job Metrics**:
+  - `libvirt_volume_provisioner_jobs_total{status}` - Total jobs by final status
+  - `libvirt_volume_provisioner_active_jobs` - Currently running jobs
+
+- **Go Runtime Metrics**:
+  - Memory usage, GC statistics, goroutine counts
+
+#### ServiceMonitor Configuration
+
+Deploy Prometheus ServiceMonitor for automatic metrics collection:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: libvirt-volume-provisioner
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: libvirt-volume-provisioner
+  endpoints:
+  - port: https
+    path: /metrics
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true  # Use proper certs in production
+    bearerTokenSecret:
+      name: provisioner-api-tokens
+      key: token
+    interval: 30s
+```
+
+#### Alerting Rules
+
+Configure these Prometheus alerting rules for operational monitoring:
+
+```yaml
+groups:
+- name: libvirt-volume-provisioner
+  rules:
+  - alert: VolumeProvisionerDown
+    expr: up{job="libvirt-volume-provisioner"} == 0
+    for: 5m
+    labels:
+      severity: error
+    annotations:
+      summary: "Volume provisioner service is down"
+
+  - alert: VolumeProvisionerHighErrorRate
+    expr: rate(libvirt_volume_provisioner_requests_total{status=~"5.."}[5m]) / rate(libvirt_volume_provisioner_requests_total[5m]) > 0.1
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "High error rate on volume provisioner"
+
+  - alert: VolumeProvisionerJobFailures
+    expr: increase(libvirt_volume_provisioner_jobs_total{status="failed"}[10m]) > 5
+    for: 5m
+    labels:
+      severity: error
+    annotations:
+      summary: "Multiple volume provisioning job failures"
 ```
 
 ### Logs
