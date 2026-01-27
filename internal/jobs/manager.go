@@ -345,16 +345,6 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 		return cachedImage.Path, nil
 	}
 
-	if cachedImage != nil {
-		logrus.WithFields(logrus.Fields{
-			"job_id":      job.ID,
-			"image_url":   req.ImageURL,
-			"cached_path": cachedImage.Path,
-			"cache_hit":   true,
-		}).Info("Using cached image")
-		return cachedImage.Path, nil
-	}
-
 	// Image not cached, need to download
 	logrus.WithFields(logrus.Fields{
 		"job_id":    job.ID,
@@ -362,27 +352,22 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 		"cache_hit": false,
 	}).Info("Image not cached, downloading")
 
-	// Get image size first (needed for libvirt volume allocation)
-	imageSize, err := m.getImageSize(ctx, req.ImageURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to get image size: %w", err)
-	}
-
 	// Generate image name from URL
 	imageName := libvirt.GetImageNameFromURL(req.ImageURL)
 
-	// Allocate space in libvirt pool
-	imagePath, err := m.libvirtPool.AllocateImage(imageName, imageSize)
+	// Allocate file path in cache directory (no libvirt volume allocation).
+	// This preserves compression for QCOW2 images by storing them as plain files.
+	imagePath, err := m.libvirtPool.AllocateImageFile(imageName)
 	if err != nil {
-		return "", fmt.Errorf("failed to allocate libvirt image: %w", err)
+		return "", fmt.Errorf("failed to allocate cache file: %w", err)
 	}
 
-	// Download image to allocated path
+	// Download image to cache path
 	job.Progress.Stage = "downloading"
 	job.Progress.Percent = 10
 
 	if err := m.minioClient.DownloadImageToPath(ctx, req.ImageURL, imagePath, job); err != nil {
-		// Cleanup failed allocation
+		// Cleanup failed download
 		_ = m.libvirtPool.DeleteImage(imagePath)
 		return "", fmt.Errorf("failed to download image: %w", err)
 	}
@@ -441,35 +426,6 @@ func (m *Manager) getImageChecksum(ctx context.Context, imageURL string) (string
 	}
 
 	return checksum, nil
-}
-
-// getImageSize gets the size of an image from MinIO without downloading
-func (m *Manager) getImageSize(ctx context.Context, imageURL string) (uint64, error) {
-	// Parse the image URL to extract bucket and object
-	u, err := url.Parse(imageURL)
-	if err != nil {
-		return 0, fmt.Errorf("invalid image URL: %w", err)
-	}
-
-	pathParts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
-	if len(pathParts) < 2 {
-		return 0, fmt.Errorf("invalid image URL path: %s", u.Path)
-	}
-
-	bucketName := pathParts[0]
-	objectName := strings.Join(pathParts[1:], "/")
-
-	// Get object info
-	objInfo, err := m.minioClient.StatObject(ctx, bucketName, objectName)
-	if err != nil {
-		return 0, fmt.Errorf("failed to stat object: %w", err)
-	}
-
-	// Safe conversion from int64 to uint64 (MinIO sizes shouldn't be negative)
-	if objInfo.Size < 0 {
-		return 0, fmt.Errorf("invalid object size: %d", objInfo.Size)
-	}
-	return uint64(objInfo.Size), nil
 }
 
 // GetActiveJobs returns the count of active jobs

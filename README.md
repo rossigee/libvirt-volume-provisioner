@@ -6,10 +6,123 @@ A daemon service for provisioning LVM volumes with VM images on libvirt hypervis
 
 The `libvirt-volume-provisioner` runs as a systemd service on hypervisor hosts and provides an HTTP API for:
 
-- Downloading VM images from MinIO object storage
-- Converting QCOW2 images to raw format
+- Downloading VM images from MinIO object storage with intelligent checksum-based caching
+- Caching images with compression preservation to reduce disk space usage
+- Converting cached QCOW2 images to raw format for LVM volume population
 - Populating LVM volumes with VM disk data
 - Progress tracking and error reporting
+
+## Bigger Picture: VM Deployment Workflow
+
+The `libvirt-volume-provisioner` is a critical component in a complete VM deployment system. Here's how it fits into the larger infrastructure:
+
+### Complete Workflow
+
+```
+1. IMAGE PREPARATION
+   User/CI Pipeline
+        ↓
+   Build VM Image (cloud-init enabled)
+        ↓
+   Upload to MinIO Bucket
+   (ubuntu-20.04.qcow2 + .sha256 checksum)
+
+2. VM DEFINITION
+   Infrastructure-as-Code (Terraform/Ansible/etc)
+        ↓
+   Define VM in libvirtd:
+   - vCPU, Memory, Network
+   - Root volume attachment (empty or placeholder)
+   - Cloud-init user-data config
+
+3. ROOT VOLUME PROVISIONING ← libvirt-volume-provisioner starts here
+   Infrastructure Automation
+        ↓
+   Call: POST /api/v1/provision
+   - Image URL: MinIO bucket location
+   - Volume: LVM device for root disk
+   - Size: Desired disk size
+        ↓
+   Wait for provisioning to complete
+   (Check cache → Download → Populate LVM volume)
+
+4. VM STARTUP
+   Infrastructure Automation
+        ↓
+   Start VM via libvirtd
+        ↓
+   Cloud-init runs (first boot)
+   - Reads user-data configuration
+   - Provisions VM with desired state:
+     * User accounts
+     * SSH keys
+     * Packages
+     * Configuration management setup
+   - Configures networking
+   - Runs custom provisioning scripts
+        ↓
+   VM fully operational
+
+5. SUBSEQUENT REPROVISIONING
+   To reprovision existing VM:
+   ↓
+   Shut down VM
+   ↓
+   Call: POST /api/v1/provision (same volume)
+   - Volume is reused (size validated)
+   - Image re-populated with fresh base
+   ↓
+   Start VM
+   ↓
+   Cloud-init re-provisions with new user-data
+```
+
+### Component Interaction Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Infrastructure Orchestration (infrastructure-builder, etc)       │
+└──────────────────────┬──────────────────────────────────────────┘
+                       │
+        ┌──────────────┼──────────────┬──────────────┐
+        │              │              │              │
+        ▼              ▼              ▼              ▼
+    ┌────────┐   ┌──────────┐   ┌─────────┐   ┌─────────────────┐
+    │ MinIO  │   │ libvirtd │   │   LVM   │   │ Cloud-Init      │
+    │Bucket  │   │ VM Mgmt  │   │Volumes  │   │Configuration   │
+    │        │   │          │   │         │   │                 │
+    │Images  │   │ VM Defs  │   │ Storage │   │ User-data       │
+    └────────┘   └──────────┘   └─────────┘   │ Provisioning    │
+        ▲              ▲              ▲         └─────────────────┘
+        │              │              │              ▲
+        │              └──────────────┼──────────────┘
+        │                             │
+        └─────────────────────────────┼───────────────────┐
+                                      │                   │
+                        ┌─────────────▼──────────────┐    │
+                        │ libvirt-volume-provisioner │    │
+                        │                            │    │
+                        │ • Check cache              │    │
+                        │ • Download images          │    │
+                        │ • Populate LVM volumes     │    │
+                        │ • Convert QCOW2 → RAW     │    │
+                        └────────────────────────────┘    │
+                                      ▲                   │
+                                      │                   │
+                                      └───────────────────┘
+                              Infrastructure API Calls
+```
+
+### Key Design Concepts
+
+1. **Image Immutability**: Base images in MinIO never change; reprovisioning gets fresh copy
+2. **Idempotent Provisioning**: Cloud-init ensures VM reaches desired state regardless of history
+3. **Volume Reuse**: Same LVM volume can be repopulated multiple times (for reprovisioning)
+4. **Separation of Concerns**:
+   - MinIO: Stores base images
+   - libvirtd: Manages VM lifecycle and resources
+   - libvirt-volume-provisioner: Bridges the gap (populates volumes from images)
+   - Cloud-init: Final configuration and customization
 
 ## Architecture
 
@@ -25,12 +138,14 @@ VM Definition → libvirt → Running VM
 
 ### Image Caching
 
-The provisioner implements intelligent image caching:
+The provisioner implements intelligent image caching with compression preservation:
 
 - **Checksum-based caching**: Uses SHA256 checksums from MinIO `.sha256` files as cache keys
-- **libvirt storage pools**: Images are cached in libvirt's `images` pool at `/var/lib/libvirt/images/`
+- **Compression-preserving storage**: Images are cached as plain files in `/var/lib/libvirt/images/`, preserving QCOW2 compression instead of expanding to raw format
+- **Cache directory**: Managed by libvirt's `images` storage pool
 - **Fallback behavior**: Falls back to URL-based caching if checksums aren't available
 - **Cache validation**: Verifies cached images against checksums before use
+- **Storage efficiency**: Cached QCOW2 images remain compressed, significantly reducing disk space usage
 
 ## API
 
@@ -38,9 +153,10 @@ The provisioner implements intelligent image caching:
 Start volume provisioning job.
 
 **Behavior:**
-- Downloads and caches QCOW2 images from MinIO to libvirt storage pool
+- Downloads and caches QCOW2 images from MinIO with compression preservation
+- Checksum-based cache ensures images are only downloaded once
 - Creates or reuses compatible LVM volumes
-- Converts images to raw format for VM use
+- Converts cached QCOW2 images to raw format for final LVM volume population
 - Provides progress tracking and error reporting
 - Implements automatic rollback: cleans up partially created volumes on failure
 
@@ -90,6 +206,112 @@ Get provisioning job status.
 ### DELETE /api/v1/cancel/{job_id}
 Cancel a running provisioning job.
 
+## Usage Examples
+
+### Provisioning a new volume with cache
+
+First provisioning request - image is downloaded, cached with compression preserved, then converted to raw and populated to the LVM volume:
+
+```bash
+curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
+  --cacert /path/to/ca.crt \
+  --cert /path/to/client.crt \
+  --key /path/to/client.key \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_url": "https://minio.example.com/images/ubuntu-20.04.qcow2",
+    "volume_name": "vm-root-disk-1",
+    "volume_size_gb": 50,
+    "image_type": "qcow2",
+    "correlation_id": "provision-vm-001"
+  }'
+```
+
+Response:
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### Check provisioning progress
+
+```bash
+curl https://hypervisor.example.com:8080/api/v1/status/550e8400-e29b-41d4-a716-446655440000 \
+  --cacert /path/to/ca.crt \
+  --cert /path/to/client.crt \
+  --key /path/to/client.key
+```
+
+Response while in progress:
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "running",
+  "progress": {
+    "stage": "downloading",
+    "percent": 45,
+    "bytes_processed": 22500000000,
+    "bytes_total": 50000000000
+  }
+}
+```
+
+Response when complete:
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "completed",
+  "progress": {
+    "stage": "finalizing",
+    "percent": 100,
+    "bytes_processed": 50000000000,
+    "bytes_total": 50000000000
+  },
+  "correlation_id": "provision-vm-001",
+  "cache_hit": false,
+  "image_path": "/var/lib/libvirt/images/ubuntu-20.04.qcow2"
+}
+```
+
+### Provisioning another volume with same image (cache hit)
+
+Second request for the same image uses cached version - much faster:
+
+```bash
+curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
+  --cacert /path/to/ca.crt \
+  --cert /path/to/client.crt \
+  --key /path/to/client.key \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_url": "https://minio.example.com/images/ubuntu-20.04.qcow2",
+    "volume_name": "vm-root-disk-2",
+    "volume_size_gb": 50,
+    "image_type": "qcow2",
+    "correlation_id": "provision-vm-002"
+  }'
+```
+
+Response when completed (note `cache_hit: true`):
+```json
+{
+  "job_id": "660f9511-f30c-52e5-b827-557766551111",
+  "status": "completed",
+  "progress": {
+    "stage": "finalizing",
+    "percent": 100,
+    "bytes_processed": 50000000000,
+    "bytes_total": 50000000000
+  },
+  "correlation_id": "provision-vm-002",
+  "cache_hit": true,
+  "image_path": "/var/lib/libvirt/images/ubuntu-20.04.qcow2"
+}
+```
+
+**Note:** The second request completes much faster due to cache hit, as the QCOW2 image is already cached in compressed format and doesn't need to be re-downloaded.
+
 ## Authentication
 
 - **Primary**: X.509 client certificates (mutual TLS)
@@ -105,8 +327,8 @@ The libvirt-volume-provisioner supports multiple deployment methods to suit diff
 
 ```bash
 # Download and install
-wget https://github.com/rossigee/libvirt-volume-provisioner/releases/download/v0.2.7/libvirt-volume-provisioner_0.2.7_amd64.deb
-sudo apt install ./libvirt-volume-provisioner_0.2.7_amd64.deb
+wget https://github.com/rossigee/libvirt-volume-provisioner/releases/download/v0.3.0/libvirt-volume-provisioner_0.3.0_amd64.deb
+sudo apt install ./libvirt-volume-provisioner_0.3.0_amd64.deb
 
 # Configure (edit with your values)
 sudo vi /etc/default/libvirt-volume-provisioner
@@ -244,7 +466,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive deployment instructions for
 
 2. **Install the package:**
     ```bash
-    sudo dpkg -i libvirt-volume-provisioner_0.2.7_amd64.deb
+    sudo dpkg -i libvirt-volume-provisioner_0.3.0_amd64.deb
     sudo apt-get install -f  # Install any missing dependencies
     ```
 

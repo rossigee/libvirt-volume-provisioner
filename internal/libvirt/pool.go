@@ -101,6 +101,7 @@ func (pm *PoolManager) ensurePool() error {
 }
 
 // AllocateImage allocates space for an image in the libvirt storage pool
+// DEPRECATED: Use AllocateImageFile instead for better compression handling
 func (pm *PoolManager) AllocateImage(imageName string, sizeBytes uint64) (string, error) {
 	pool, err := pm.conn.LookupStoragePoolByName(pm.poolName)
 	if err != nil {
@@ -134,63 +135,69 @@ func (pm *PoolManager) AllocateImage(imageName string, sizeBytes uint64) (string
 	return volPath, nil
 }
 
-// CheckCache checks if an image is already cached
+// AllocateImageFile allocates a file path for caching an image without creating a libvirt volume.
+// This preserves compression in QCOW2 images by storing them as plain files instead of RAW volumes.
+func (pm *PoolManager) AllocateImageFile(imageName string) (string, error) {
+	// Ensure cache directory exists
+	if err := os.MkdirAll(pm.poolPath, 0o750); err != nil {
+		return "", fmt.Errorf("failed to create cache directory: %w", err)
+	}
+
+	// Return the full path where the image file will be stored
+	imagePath := filepath.Join(pm.poolPath, imageName)
+	return imagePath, nil
+}
+
+// CheckCache checks if an image is already cached by looking for the checksum file.
+// Returns cached image metadata if found, nil if not cached, or error on failure.
 func (pm *PoolManager) CheckCache(checksum string) (*ImageCache, error) {
-	pool, err := pm.conn.LookupStoragePoolByName(pm.poolName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to lookup pool: %w", err)
-	}
-	defer func() { _ = pool.Free() }()
-
-	// List all volumes in the pool
-	vols, err := pool.ListAllStorageVolumes(0)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list volumes: %w", err)
+	// Ensure cache directory exists
+	if err := os.MkdirAll(pm.poolPath, 0o750); err != nil {
+		return nil, fmt.Errorf("failed to access cache directory: %w", err)
 	}
 
-	// Look for volume with matching checksum
-	checksumFile := checksum + ".sha256"
-	for _, vol := range vols {
-		volName, err := vol.GetName()
-		if err != nil {
-			_ = vol.Free()
-			continue
+	// Look for checksum file in the cache directory
+	checksumFile := filepath.Join(pm.poolPath, checksum+".sha256")
+
+	// Check if checksum file exists
+	if _, err := os.Stat(checksumFile); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil //nolint:nilnil // Image not cached
 		}
-
-		if volName == checksumFile {
-			// Found checksum file, get the image path
-			volPath, err := vol.GetPath()
-			if err != nil {
-				_ = vol.Free()
-				continue
-			}
-
-			// Image should be in same directory with .img extension removed from checksum
-			imagePath := strings.TrimSuffix(volPath, ".sha256")
-
-			// Check if image file exists
-			if _, err := os.Stat(imagePath); err == nil {
-				volInfo, err := vol.GetInfo()
-				if err != nil {
-					_ = vol.Free()
-					continue
-				}
-
-				cache := &ImageCache{
-					Path:     imagePath,
-					Size:     volInfo.Capacity,
-					Checksum: checksum,
-				}
-
-				_ = vol.Free()
-				return cache, nil
-			}
-		}
-
-		_ = vol.Free()
+		return nil, fmt.Errorf("failed to check checksum file: %w", err)
 	}
 
-	return nil, nil //nolint:nilnil // Image not cached
+	// Checksum file exists, now find the corresponding image file.
+	// Convention: checksum file is "{imagePath}.sha256", so image path is "{checksum_file_path}" minus ".sha256"
+	imagePath := strings.TrimSuffix(checksumFile, ".sha256")
+
+	// Verify image file exists
+	fileInfo, err := os.Stat(imagePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Checksum file orphaned - image was deleted
+			logrus.WithFields(logrus.Fields{
+				"checksum":      checksum,
+				"checksum_file": checksumFile,
+				"image_path":    imagePath,
+			}).Warn("Orphaned checksum file - image file missing")
+			return nil, nil //nolint:nilnil // Image not cached
+		}
+		return nil, fmt.Errorf("failed to stat image file: %w", err)
+	}
+
+	// Return cached image information
+	size := fileInfo.Size()
+	if size < 0 {
+		return nil, fmt.Errorf("invalid file size: %d", size)
+	}
+	cache := &ImageCache{
+		Path:     imagePath,
+		Size:     uint64(size),
+		Checksum: checksum,
+	}
+
+	return cache, nil
 }
 
 // CreateCacheEntry creates a cache entry with checksum file
