@@ -1,0 +1,77 @@
+# Test build stage - includes test dependencies and tools
+FROM golang:1.25.6-alpine AS test-builder
+
+# Install test dependencies
+RUN apk add --no-cache \
+    libvirt-dev \
+    pkgconfig \
+    gcc \
+    musl-dev \
+    postgresql-client \
+    redis \
+    curl \
+    jq
+
+# Set working directory
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build test binary with race detection and coverage
+RUN CGO_ENABLED=1 GOOS=linux go test -c -race -covermode=atomic \
+    -tags=integration \
+    -o integration.test \
+    ./integration/...
+
+# Build the provisioner binary for integration tests
+RUN CGO_ENABLED=1 GOOS=linux go build \
+    -tags=integration \
+    -ldflags '-w -extldflags "-static"' \
+    -o provisioner \
+    ./cmd/provisioner
+
+# Final test runner stage
+FROM alpine:latest
+
+# Install runtime dependencies for tests
+RUN apk add --no-cache \
+    libvirt-client \
+    lvm2 \
+    postgresql-client \
+    valkey \
+    curl \
+    jq \
+    bash \
+    qemu-img
+
+# Create test user (libvirt typically needs specific user)
+RUN adduser -D -s /bin/bash testuser
+
+# Copy binaries from builder
+COPY --from=test-builder /app/integration.test /usr/local/bin/integration.test
+COPY --from=test-builder /app/provisioner /usr/local/bin/provisioner
+
+# Copy test data and scripts
+COPY --from=test-builder /app/integration/ /integration/
+
+# Create necessary directories
+RUN mkdir -p /testdata /tmp/libvirt /var/lib/libvirt/images
+
+# Set proper permissions
+RUN chown -R testuser:testuser /testdata /tmp/libvirt /var/lib/libvirt
+
+# Switch to test user
+USER testuser
+
+# Set working directory
+WORKDIR /integration
+
+# Default command runs the integration tests
+CMD ["/usr/local/bin/integration.test", "-test.v", "-test.timeout=30m"]
