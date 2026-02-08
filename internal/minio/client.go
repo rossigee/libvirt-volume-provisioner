@@ -220,8 +220,9 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 	}()
 
 	// Copy with progress tracking
-	buffer := make([]byte, 32*1024*1024) // 32MB buffer
+	buffer := make([]byte, 4*1024*1024) // 4MB buffer for more frequent updates
 	var downloaded int64
+	lastUpdate := time.Now()
 
 	for {
 		select {
@@ -237,10 +238,13 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 			}
 			downloaded += int64(n)
 
-			// Update progress
-			if updater != nil && totalSize > 0 {
+			// Update progress more frequently (every 4MB or every 500ms)
+			now := time.Now()
+			if updater != nil && totalSize > 0 &&
+				(now.Sub(lastUpdate) > 500*time.Millisecond || downloaded%(16*1024*1024) == 0) {
 				percent := float64(downloaded) / float64(totalSize) * 30 // 30% of total progress
 				updater.UpdateProgress("downloading", 10+percent, downloaded, totalSize)
+				lastUpdate = now
 			}
 		}
 
@@ -250,6 +254,11 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 		if err != nil {
 			return fmt.Errorf("failed to read from MinIO: %w", err)
 		}
+	}
+
+	// Final progress update
+	if updater != nil && totalSize > 0 {
+		updater.UpdateProgress("downloading", 40, downloaded, totalSize)
 	}
 
 	// Verify download

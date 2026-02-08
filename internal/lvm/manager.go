@@ -163,6 +163,27 @@ func (m *Manager) populateVolumeOnce(imagePath, volumeName, imageType string, up
 		return fmt.Errorf("LVM volume device does not exist: %s", devicePath)
 	}
 
+	// Check if volume already has content by looking for filesystem
+	//nolint:gosec,noctx // Device path from internal volume name
+	blkidCmd := exec.Command("blkid", "-o", "value", "-s", "TYPE", devicePath)
+	blkidOutput, blkidErr := blkidCmd.Output()
+
+	// If blkid finds a filesystem, the volume has content
+	if blkidErr == nil && strings.TrimSpace(string(blkidOutput)) != "" {
+		filesystemType := strings.TrimSpace(string(blkidOutput))
+		logrus.WithFields(logrus.Fields{
+			"volume_name":     volumeName,
+			"device_path":     devicePath,
+			"filesystem_type": filesystemType,
+		}).Info("Volume already has filesystem, skipping population")
+		return nil
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"volume_name": volumeName,
+		"device_path": devicePath,
+	}).Info("Volume has no filesystem, proceeding with population")
+
 	logrus.WithFields(logrus.Fields{
 		"volume_name": volumeName,
 		"device_path": devicePath,
@@ -186,10 +207,29 @@ func (m *Manager) populateVolumeOnce(imagePath, volumeName, imageType string, up
 	}
 
 	// Execute conversion with progress tracking
+	logrus.WithFields(logrus.Fields{
+		"volume_name": volumeName,
+		"command":     strings.Join(cmd.Args, " "),
+	}).Info("Executing volume population command")
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		exitCode := -1
+		if cmd.ProcessState != nil {
+			exitCode = cmd.ProcessState.ExitCode()
+		}
+		logrus.WithFields(logrus.Fields{
+			"volume_name": volumeName,
+			"error":       err,
+			"exit_code":   exitCode,
+			"output":      string(output),
+		}).Error("Volume population command failed")
 		return fmt.Errorf("failed to populate LVM volume: %w, output: %s", err, string(output))
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"volume_name": volumeName,
+	}).Info("Volume population command completed successfully")
 
 	// Update progress
 	if updater != nil {
@@ -209,7 +249,12 @@ func (m *Manager) DeleteVolume(volumeName string) error {
 	cmd := exec.Command("lvremove", "-f", fmt.Sprintf("%s/%s", m.vgName, volumeName))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to delete LVM volume: %w, output: %s", err, string(output))
+		logrus.WithFields(logrus.Fields{
+			"volume_name": volumeName,
+			"error":       err,
+			"output":      string(output),
+		}).Error("Failed to delete LVM volume")
+		return fmt.Errorf("failed to delete LVM volume %s: %w", volumeName, err)
 	}
 
 	return nil
