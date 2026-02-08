@@ -137,27 +137,27 @@ func (pm *PoolManager) AllocateImage(imageName string, sizeBytes uint64) (string
 
 // AllocateImageFile allocates a file path for caching an image without creating a libvirt volume.
 // This preserves compression in QCOW2 images by storing them as plain files instead of RAW volumes.
-func (pm *PoolManager) AllocateImageFile(imageName string) (string, error) {
+func (pm *PoolManager) AllocateImageFile(cacheKey string) (string, error) {
 	// Ensure cache directory exists
 	if err := os.MkdirAll(pm.poolPath, 0o750); err != nil {
 		return "", fmt.Errorf("failed to create cache directory: %w", err)
 	}
 
 	// Return the full path where the image file will be stored
-	imagePath := filepath.Join(pm.poolPath, imageName)
+	imagePath := filepath.Join(pm.poolPath, cacheKey)
 	return imagePath, nil
 }
 
 // CheckCache checks if an image is already cached by looking for the checksum file.
 // Returns cached image metadata if found, nil if not cached, or error on failure.
-func (pm *PoolManager) CheckCache(checksum string) (*ImageCache, error) {
+func (pm *PoolManager) CheckCache(cacheKey string) (*ImageCache, error) {
 	// Ensure cache directory exists
 	if err := os.MkdirAll(pm.poolPath, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to access cache directory: %w", err)
 	}
 
 	// Look for checksum file in the cache directory
-	checksumFile := filepath.Join(pm.poolPath, checksum+".sha256")
+	checksumFile := filepath.Join(pm.poolPath, cacheKey+".sha256")
 
 	// Check if checksum file exists
 	if _, err := os.Stat(checksumFile); err != nil {
@@ -177,7 +177,7 @@ func (pm *PoolManager) CheckCache(checksum string) (*ImageCache, error) {
 		if os.IsNotExist(err) {
 			// Checksum file orphaned - image was deleted
 			logrus.WithFields(logrus.Fields{
-				"checksum":      checksum,
+				"cache_key":     cacheKey,
 				"checksum_file": checksumFile,
 				"image_path":    imagePath,
 			}).Warn("Orphaned checksum file - image file missing")
@@ -194,7 +194,7 @@ func (pm *PoolManager) CheckCache(checksum string) (*ImageCache, error) {
 	cache := &ImageCache{
 		Path:     imagePath,
 		Size:     uint64(size),
-		Checksum: checksum,
+		Checksum: cacheKey,
 	}
 
 	return cache, nil
