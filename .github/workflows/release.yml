@@ -48,6 +48,12 @@ jobs:
     - name: Build Debian package
       run: make deb
 
+    - name: Upload Debian package
+      uses: actions/upload-artifact@v4
+      with:
+        name: libvirt-volume-provisioner-0.4.0-amd64.deb
+        path: libvirt-volume-provisioner_0.4.0_amd64.deb
+
     - name: Build Docker images
       run: |
         make build-docker
