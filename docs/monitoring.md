@@ -31,6 +31,49 @@ Kubernetes-compatible health check (alias for /health).
 
 Kubernetes liveness probe (alias for /health).
 
+## Distributed Tracing
+
+The provisioner includes comprehensive distributed tracing using OpenTelemetry (OTLP).
+
+### OpenTelemetry Configuration
+
+Configure tracing by setting the OTLP gRPC endpoint:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://otel-collector.example.com:4317"
+export OTEL_SERVICE_NAME="libvirt-volume-provisioner"
+```
+
+### Trace Spans
+
+The following operations are instrumented with spans:
+
+- **HTTP Requests**: Automatic span creation for all API endpoints via otelgin middleware
+- **Job Lifecycle**: `runJob`, `runCacheJob` with job metadata
+- **MinIO Operations**: `DownloadImageToPath` with image URL and destination path
+- **LVM Operations**: `CreateVolume`, `PopulateVolume`, `DeleteVolume` with volume metadata
+
+### Trace Context Propagation
+
+- HTTP request contexts are propagated to job operations
+- Job operations create child spans with independent timeouts
+- Trace context is available throughout the request lifecycle
+
+### Log Correlation
+
+Logs include trace and span IDs for correlation:
+
+```json
+{
+  "timestamp": "2026-01-27T10:30:45.123Z",
+  "level": "info",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "span_id": "00f067aa0ba902b7",
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "message": "Starting image download"
+}
+```
+
 ## Prometheus Metrics
 
 ### GET /metrics
@@ -226,6 +269,8 @@ Query in Grafana Loki:
 
 Create a Grafana dashboard with:
 
+#### Metrics Panels
+
 1. **Service Status**
    - Panel: `up{job="libvirt-volume-provisioner"}`
    - Type: Stat
@@ -249,6 +294,23 @@ Create a Grafana dashboard with:
 6. **Response Latency (95th percentile)**
    - Panel: `histogram_quantile(0.95, rate(libvirt_volume_provisioner_requests_duration_seconds_bucket[5m]))`
    - Type: Graph
+
+#### Tracing Integration
+
+For distributed tracing, configure Tempo or Jaeger data source and create trace panels:
+
+7. **Trace Explorer**
+   - Query: `{resource.service.name="libvirt-volume-provisioner"}`
+   - Shows end-to-end request traces
+
+8. **Span Performance**
+   - Service: `libvirt-volume-provisioner`
+   - Operation: `runJob`, `DownloadImageToPath`, `CreateVolume`, etc.
+   - Shows span duration percentiles and error rates
+
+9. **Service Map**
+   - Visualize service dependencies and trace flows
+   - Shows relationships between provisioner, MinIO, and LVM operations
 
 ## Key Metrics to Monitor
 

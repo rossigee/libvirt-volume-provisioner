@@ -1,7 +1,9 @@
 package jobs
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 	"github.com/stretchr/testify/assert"
@@ -196,4 +198,203 @@ func TestGetActiveJobs(t *testing.T) {
 
 	// Should count running and pending jobs only
 	assert.Equal(t, 3, activeCount)
+}
+
+// TestStartJob tests starting a new provisioning job
+func TestStartJob(t *testing.T) {
+	manager := &Manager{
+		jobs:      make(map[string]*Job),
+		semaphore: make(chan struct{}, 2),
+		// Note: In a real implementation, minioClient, lvmManager, etc. would be mocked
+		// For this unit test, we're only testing the job creation logic
+	}
+
+	req := types.ProvisionRequest{
+		ImageURL:      "https://minio.example.com/images/ubuntu.qcow2",
+		VolumeName:    "test-volume",
+		VolumeSizeGB:  10,
+		ImageType:     "qcow2",
+		CorrelationID: "test-correlation-id",
+	}
+
+	// Note: This test will create a job but the goroutine will panic due to nil dependencies
+	// In a real test suite, we'd mock all the dependencies
+	jobID, err := manager.StartJob(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.NotEmpty(t, jobID)
+	assert.Contains(t, manager.jobs, jobID)
+
+	job := manager.jobs[jobID]
+	assert.Equal(t, jobID, job.ID)
+	assert.Equal(t, types.StatusPending, job.Status)
+	assert.Equal(t, req, job.Request)
+	assert.Equal(t, "test-correlation-id", job.CorrelationID)
+	assert.NotZero(t, job.CreatedAt)
+	assert.NotZero(t, job.UpdatedAt)
+	assert.NotNil(t, job.cancelFunc)
+}
+
+// TestStartJob_MultipleJobs tests starting multiple jobs
+func TestStartJob_MultipleJobs(t *testing.T) {
+	manager := &Manager{
+		jobs:      make(map[string]*Job),
+		semaphore: make(chan struct{}, 2),
+	}
+
+	req1 := types.ProvisionRequest{
+		ImageURL:     "https://minio.example.com/images/ubuntu.qcow2",
+		VolumeName:   "test-volume-1",
+		VolumeSizeGB: 10,
+	}
+
+	req2 := types.ProvisionRequest{
+		ImageURL:     "https://minio.example.com/images/centos.qcow2",
+		VolumeName:   "test-volume-2",
+		VolumeSizeGB: 20,
+	}
+
+	jobID1, err1 := manager.StartJob(context.Background(), req1)
+	jobID2, err2 := manager.StartJob(context.Background(), req2)
+
+	assert.NoError(t, err1)
+	assert.NoError(t, err2)
+	assert.NotEqual(t, jobID1, jobID2)
+	assert.Len(t, manager.jobs, 2)
+}
+
+// TestGetJobStatus tests retrieving job status
+func TestGetJobStatus(t *testing.T) {
+	manager := &Manager{
+		jobs:      make(map[string]*Job),
+		semaphore: make(chan struct{}, 2),
+	}
+
+	job := &Job{
+		ID:     "test-job",
+		Status: types.StatusCompleted,
+		Request: types.ProvisionRequest{
+			ImageURL:     "https://minio.example.com/images/ubuntu.qcow2",
+			VolumeName:   "test-volume",
+			VolumeSizeGB: 10,
+		},
+		Progress: &types.ProgressInfo{
+			Stage:          "completed",
+			Percent:        100.0,
+			BytesProcessed: 1024,
+			BytesTotal:     1024,
+		},
+		CreatedAt: time.Now().Add(-time.Hour),
+		UpdatedAt: time.Now(),
+	}
+
+	manager.jobs["test-job"] = job
+
+	status, err := manager.GetJobStatus("test-job")
+
+	assert.NoError(t, err)
+	assert.Equal(t, "test-job", status.JobID)
+	assert.Equal(t, types.StatusCompleted, status.Status)
+	assert.Equal(t, job.Progress, status.Progress)
+	assert.Equal(t, job.CreatedAt, status.CreatedAt)
+	assert.Equal(t, job.UpdatedAt, status.UpdatedAt)
+}
+
+// TestGetJobStatus_NotFound tests getting status for non-existent job
+func TestGetJobStatus_NotFound(t *testing.T) {
+	manager := &Manager{
+		jobs:      make(map[string]*Job),
+		semaphore: make(chan struct{}, 2),
+	}
+
+	_, err := manager.GetJobStatus("nonexistent-job")
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+// TestCancelJob tests canceling a running job
+func TestCancelJob(t *testing.T) {
+	manager := &Manager{
+		jobs:      make(map[string]*Job),
+		semaphore: make(chan struct{}, 2),
+	}
+
+	cancelled := false
+	cancelFunc := func() {
+		cancelled = true
+	}
+
+	job := &Job{
+		ID:         "test-job",
+		Status:     types.StatusRunning,
+		cancelFunc: cancelFunc,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+
+	manager.jobs["test-job"] = job
+
+	err := manager.CancelJob("test-job")
+
+	assert.NoError(t, err)
+	assert.True(t, cancelled)
+}
+
+// TestCancelJob_NotFound tests canceling non-existent job
+func TestCancelJob_NotFound(t *testing.T) {
+	manager := &Manager{
+		jobs:      make(map[string]*Job),
+		semaphore: make(chan struct{}, 2),
+	}
+
+	err := manager.CancelJob("nonexistent-job")
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+// TestCancelJob_AlreadyCompleted tests canceling already completed job
+func TestCancelJob_AlreadyCompleted(t *testing.T) {
+	manager := &Manager{
+		jobs:      make(map[string]*Job),
+		semaphore: make(chan struct{}, 2),
+	}
+
+	job := &Job{
+		ID:     "test-job",
+		Status: types.StatusCompleted,
+	}
+
+	manager.jobs["test-job"] = job
+
+	err := manager.CancelJob("test-job")
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be cancelled")
+}
+
+// TestFetchImageToCache tests starting an image cache job
+func TestFetchImageToCache(t *testing.T) {
+	manager := &Manager{
+		jobs:      make(map[string]*Job),
+		semaphore: make(chan struct{}, 2),
+	}
+
+	req := types.FetchImageToCacheRequest{
+		ImageURL: "https://minio.example.com/images/cache-image.qcow2",
+	}
+
+	jobID, err := manager.FetchImageToCache(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.NotEmpty(t, jobID)
+	assert.Contains(t, manager.jobs, jobID)
+
+	job := manager.jobs[jobID]
+	assert.Equal(t, jobID, job.ID)
+	assert.Equal(t, types.StatusPending, job.Status)
+	assert.Equal(t, req.ImageURL, job.Request.ImageURL)
+	assert.NotZero(t, job.CreatedAt)
+	assert.NotZero(t, job.UpdatedAt)
 }

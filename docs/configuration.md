@@ -54,6 +54,14 @@ The libvirt-volume-provisioner is configured via environment variables.
 | `LOG_LEVEL` | Log level (debug, info, warn, error) | `info` | No |
 | `LOG_FORMAT` | Log format (json, text) | `json` | No |
 
+### OpenTelemetry Configuration
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP gRPC exporter endpoint | - | No |
+| `OTEL_SERVICE_NAME` | Service name for traces | `libvirt-volume-provisioner` | No |
+| `OTEL_TRACES_EXPORTER` | Trace exporter (otlp) | `otlp` | No |
+
 ## Configuration Examples
 
 ### Basic Configuration
@@ -83,6 +91,10 @@ export MINIO_BUCKET="production-vm-images"
 export LVM_VOLUME_GROUP="prod-vg"
 export LOG_LEVEL="info"
 export LOG_FORMAT="json"
+
+# OpenTelemetry tracing (optional)
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://otel-collector.example.com:4317"
+export OTEL_SERVICE_NAME="libvirt-volume-provisioner-prod"
 ```
 
 ### Development Configuration

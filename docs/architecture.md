@@ -70,35 +70,44 @@ The `libvirt-volume-provisioner` is a critical component in a complete VM deploy
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ Infrastructure Orchestration (infrastructure-builder, etc)       │
+│                      ┌─────────────────────────────────────────┐ │
+│                      │ Observability Stack                     │ │
+│                      │ • Prometheus (metrics)                  │ │
+│                      │ • Tempo/Jaeger (traces)                 │ │
+│                      │ • Loki (logs)                           │ │
+│                      └─────────────────────────────────────────┘ │
 └──────────────────────┬──────────────────────────────────────────┘
                        │
-        ┌──────────────┼──────────────┬──────────────┐
-        │              │              │              │
-        ▼              ▼              ▼              ▼
-    ┌────────┐   ┌──────────┐   ┌─────────┐   ┌─────────────────┐
-    │ MinIO  │   │ libvirtd │   │   LVM   │   │ Cloud-Init      │
-    │Bucket  │   │ VM Mgmt  │   │Volumes  │   │Configuration   │
-    │        │   │          │   │         │   │                 │
-    │Images  │   │ VM Defs  │   │ Storage │   │ User-data       │
-    └────────┘   └──────────┘   └─────────┘   │ Provisioning    │
-        ▲              ▲              ▲         └─────────────────┘
-        │              │              │              ▲
-        │              └──────────────┼──────────────┘
-        │                             │
-        └─────────────────────────────┼───────────────────┐
-                                      │                   │
-                        ┌─────────────▼──────────────┐    │
-                        │ libvirt-volume-provisioner │    │
-                        │                            │    │
-                        │ • Check cache              │    │
-                        │ • Download images          │    │
-                        │ • Populate LVM volumes     │    │
-                        │ • Convert QCOW2 → RAW     │    │
-                        └────────────────────────────┘    │
-                                      ▲                   │
-                                      │                   │
-                                      └───────────────────┘
-                              Infrastructure API Calls
+         ┌──────────────┼──────────────┬──────────────┐
+         │              │              │              │
+         ▼              ▼              ▼              ▼
+     ┌────────┐   ┌──────────┐   ┌─────────┐   ┌─────────────────┐
+     │ MinIO  │   │ libvirtd │   │   LVM   │   │ Cloud-Init      │
+     │Bucket  │   │ VM Mgmt  │   │Volumes  │   │Configuration   │
+     │        │   │          │   │         │   │                 │
+     │Images  │   │ VM Defs  │   │ Storage │   │ User-data       │
+     └────────┘   └──────────┘   └─────────┘   │ Provisioning    │
+         ▲              ▲              ▲         └─────────────────┘
+         │              │              │              ▲
+         │              └──────────────┼──────────────┘
+         │                             │
+         └─────────────────────────────┼───────────────────┐
+                                       │                   │
+                         ┌─────────────▼──────────────┐    │
+                         │ libvirt-volume-provisioner │    │
+                         │                            │    │
+                         │ • Check cache              │    │
+                         │ • Download images          │    │
+                         │ • Populate LVM volumes     │    │
+                         │ • Convert QCOW2 → RAW     │    │
+                         │ • Distributed tracing      │    │
+                         │ • Metrics collection       │    │
+                         │ • Structured logging       │    │
+                         └────────────────────────────┘    │
+                                       ▲                   │
+                                       │                   │
+                                       └───────────────────┘
+                               Infrastructure API Calls
 ```
 
 ### Key Design Concepts
@@ -111,6 +120,35 @@ The `libvirt-volume-provisioner` is a critical component in a complete VM deploy
    - libvirtd: Manages VM lifecycle and resources
    - libvirt-volume-provisioner: Bridges the gap (populates volumes from images)
    - Cloud-init: Final configuration and customization
+5. **Distributed Observability**:
+   - OpenTelemetry tracing spans across all operations
+   - Context propagation from HTTP requests to background jobs
+   - Correlated logs with trace/span IDs for debugging
+   - Prometheus metrics for monitoring and alerting
+
+### Observability Architecture
+
+The provisioner implements comprehensive observability:
+
+- **Tracing**: OpenTelemetry OTLP spans for all operations with proper parent-child relationships
+- **Metrics**: Prometheus-compatible metrics for performance monitoring
+- **Logging**: Structured JSON logs with trace correlation
+- **Health Checks**: Kubernetes-style liveness/readiness probes
+
+**Trace Flow Example:**
+```
+HTTP Request (otelgin middleware)
+    ↓
+Job Creation (StartJob span)
+    ↓
+Image Download (DownloadImageToPath span)
+    ↓
+LVM Volume Creation (CreateVolume span)
+    ↓
+Volume Population (PopulateVolume span)
+```
+
+This enables end-to-end visibility from API call to storage operations, making debugging complex provisioning issues much easier.
 
 ## Core Architecture
 
