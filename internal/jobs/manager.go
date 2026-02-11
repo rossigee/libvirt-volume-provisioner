@@ -459,6 +459,76 @@ func (m *Manager) GetJobCacheInfo(jobID string) (bool, string, error) {
 	return job.CacheHit, job.ImagePath, nil
 }
 
+// ListCachedImages returns a list of all cached images
+func (m *Manager) ListCachedImages() ([]*libvirt.ImageCache, error) {
+	images, err := m.libvirtPool.ListCachedImages()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list cached images: %w", err)
+	}
+	return images, nil
+}
+
+// FetchImageToCache starts a job to fetch and cache an image without creating a volume
+func (m *Manager) FetchImageToCache(req types.FetchImageToCacheRequest) (string, error) {
+	jobID := uuid.New().String()
+
+	job := &Job{
+		ID:        jobID,
+		Status:    types.StatusPending,
+		Request:   types.ProvisionRequest{ImageURL: req.ImageURL}, // Wrap in ProvisionRequest for compatibility
+		Progress:  &types.ProgressInfo{Stage: "pending", Percent: 0},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	m.mu.Lock()
+	m.jobs[jobID] = job
+	m.mu.Unlock()
+
+	// Start the job asynchronously
+	go m.runCacheJob(job)
+
+	return jobID, nil
+}
+
+// runCacheJob executes a cache-only job (download image to cache without volume creation)
+func (m *Manager) runCacheJob(job *Job) {
+	ctx, cancel := context.WithCancel(context.Background())
+	job.cancelFunc = cancel
+
+	// Acquire semaphore (limit concurrent operations)
+	select {
+	case m.semaphore <- struct{}{}:
+		defer func() { <-m.semaphore }()
+	case <-ctx.Done():
+		job.Status = types.StatusFailed
+		job.UpdatedAt = time.Now()
+		m.syncToDatabase(ctx, job)
+		return
+	}
+
+	job.Status = types.StatusRunning
+	job.UpdatedAt = time.Now()
+	m.syncToDatabase(ctx, job)
+
+	defer func() {
+		job.UpdatedAt = time.Now()
+		m.syncToDatabase(ctx, job)
+	}()
+
+	// Get or download image to cache
+	imagePath, err := m.getOrDownloadImage(ctx, job.Request, job)
+	if err != nil {
+		job.Status = types.StatusFailed
+		job.Error = err
+		return
+	}
+
+	job.ImagePath = imagePath
+	job.CacheHit = true // Since we always cache, this is effectively a cache hit for future use
+	job.Status = types.StatusCompleted
+}
+
 // CleanupCompletedJobs removes old completed jobs (keep last 100)
 func (m *Manager) CleanupCompletedJobs() {
 	m.mu.Lock()

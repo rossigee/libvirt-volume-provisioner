@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 	"github.com/stretchr/testify/assert"
 )
@@ -46,6 +47,14 @@ func (m *MockJobManager) GetJobCacheInfo(_ string) (bool, string, error) {
 	return false, "", nil
 }
 
+func (m *MockJobManager) ListCachedImages() ([]*libvirt.ImageCache, error) {
+	return []*libvirt.ImageCache{}, nil
+}
+
+func (m *MockJobManager) FetchImageToCache(req types.FetchImageToCacheRequest) (string, error) {
+	return "test-cache-job-id", nil
+}
+
 func TestNewHandler(t *testing.T) {
 	mockManager := &MockJobManager{}
 	handler := NewHandler(mockManager, "test-version")
@@ -80,6 +89,8 @@ func TestSetupRoutes(t *testing.T) {
 	assert.True(t, routePaths["POST /api/v1/provision"])
 	assert.True(t, routePaths["GET /api/v1/status/:job_id"])
 	assert.True(t, routePaths["DELETE /api/v1/cancel/:job_id"])
+	assert.True(t, routePaths["GET /api/v1/cache/images"])
+	assert.True(t, routePaths["POST /api/v1/cache/fetch"])
 	assert.True(t, routePaths["GET /health"])
 	assert.True(t, routePaths["GET /healthz"])
 	assert.True(t, routePaths["GET /livez"])
@@ -185,4 +196,31 @@ func TestProvisionVolume_ValidRequest(t *testing.T) {
 	assert.Equal(t, "https://minio.example.com/bucket/image.qcow2", mockManager.lastRequest.ImageURL)
 	assert.Equal(t, "test-volume", mockManager.lastRequest.VolumeName)
 	assert.Equal(t, 10, mockManager.lastRequest.VolumeSizeGB)
+}
+
+func TestFetchImageToCache_ValidRequest(t *testing.T) {
+	router := gin.New()
+	mockManager := &MockJobManager{}
+	handler := NewHandler(mockManager, "test-version")
+
+	// Mock auth middleware
+	authMiddleware := func(c *gin.Context) {
+		c.Next()
+	}
+
+	SetupRoutes(router, handler, authMiddleware)
+
+	requestBody := `{
+		"image_url": "https://minio.example.com/bucket/image.qcow2"
+	}`
+
+	w := httptest.NewRecorder()
+	body := bytes.NewBufferString(requestBody)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"/api/v1/cache/fetch", body)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Contains(t, w.Body.String(), "test-cache-job-id")
 }

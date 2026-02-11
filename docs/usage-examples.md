@@ -202,7 +202,7 @@ for i in {1..5}; do
       echo "  ✗ Failed: ${ERROR}"
       exit 1
     else
-      echo "  - ${PERCENT}% (${JOB_STATUS})"
+      printf "  - %.1f%% (%s)\n" "${PERCENT}" "${JOB_STATUS}"
       sleep 5
     fi
   done

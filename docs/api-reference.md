@@ -185,6 +185,84 @@ Cancel a running provisioning job.
 
 ---
 
+### GET /api/v1/cache/images
+
+List all cached images on the hypervisor host.
+
+**Description:**
+- Returns information about all QCOW2 images currently cached locally
+- Includes image path, size, and checksum for each cached image
+- Useful for monitoring cache usage and available images
+
+**Response (Success - 200 OK):**
+
+```json
+{
+  "images": [
+    {
+      "path": "/var/lib/libvirt/images/ubuntu-20.04.qcow2",
+      "size": 2147483648,
+      "checksum": "abc123def456..."
+    },
+    {
+      "path": "/var/lib/libvirt/images/centos-8.qcow2",
+      "size": 4294967296,
+      "checksum": "def789ghi012..."
+    }
+  ],
+  "count": 2
+}
+```
+
+**Response Fields:**
+- `images`: Array of cached image objects
+  - `path`: Full filesystem path to the cached image
+  - `size`: Image size in bytes
+  - `checksum`: SHA256 checksum of the image
+- `count`: Total number of cached images
+
+---
+
+### POST /api/v1/cache/fetch
+
+Fetch and cache an image without creating a volume (prewarming).
+
+**Description:**
+- Downloads and caches a QCOW2 image from MinIO for future use
+- Useful for prewarming the cache with commonly used images
+- Does not create LVM volumes or perform conversions
+- Returns a job ID for tracking the cache operation
+
+**Request:**
+
+```json
+{
+  "image_url": "https://minio.example.com/images/ubuntu-20.04.qcow2"
+}
+```
+
+**Request Fields:**
+- `image_url` (required): Full URL to the image in MinIO
+
+**Response (Success - 202 Accepted):**
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Response (Error - 400 Bad Request):**
+
+```json
+{
+  "error": "invalid request",
+  "details": "image_url is required"
+}
+```
+
+---
+
 ## Health Check Endpoints
 
 ### GET /health
