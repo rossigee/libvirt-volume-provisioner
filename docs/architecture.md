@@ -26,7 +26,7 @@ The `libvirt-volume-provisioner` is a critical component in a complete VM deploy
 3. ROOT VOLUME PROVISIONING ← libvirt-volume-provisioner starts here
    Infrastructure Automation
         ↓
-   Call: POST /api/v1/provision
+   Call: POST /api/v1/jobs
    - Image URL: MinIO bucket location
    - Volume: LVM device for root disk
    - Size: Desired disk size
@@ -56,7 +56,7 @@ The `libvirt-volume-provisioner` is a critical component in a complete VM deploy
    ↓
    Shut down VM
    ↓
-   Call: POST /api/v1/provision (same volume)
+   Call: POST /api/v1/jobs (same volume)
    - Volume is reused (size validated)
    - Image re-populated with fresh base
    ↓

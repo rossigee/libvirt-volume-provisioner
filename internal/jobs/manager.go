@@ -18,20 +18,25 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Job represents a volume provisioning job.
 type Job struct {
-	ID         string
-	Status     types.JobStatus
-	Request    types.ProvisionRequest
-	Progress   *types.ProgressInfo
-	Error      error
-	CacheHit   bool
-	ImagePath  string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	cancelFunc context.CancelFunc
+	ID            string
+	CorrelationID string
+	Status        types.JobStatus
+	Request       types.ProvisionRequest
+	Progress      *types.ProgressInfo
+	Error         error
+	CacheHit      bool
+	ImagePath     string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	cancelFunc    context.CancelFunc
 }
 
 // UpdateProgress implements the ProgressUpdater interface.
@@ -93,7 +98,7 @@ func (m *Manager) syncToDatabase(ctx context.Context, job *Job) {
 	}
 
 	completedAt := (*time.Time)(nil)
-	if job.Status == types.StatusCompleted || job.Status == types.StatusFailed {
+	if job.Status == types.StatusCompleted || job.Status == types.StatusFailed || job.Status == types.StatusCancelled {
 		completedAt = &job.UpdatedAt
 	}
 
@@ -130,18 +135,20 @@ func (m *Manager) RecoverJobs() error {
 }
 
 // StartJob starts a new volume provisioning job.
-func (m *Manager) StartJob(req types.ProvisionRequest) (string, error) {
+func (m *Manager) StartJob(ctx context.Context, req types.ProvisionRequest) (string, error) {
 	jobID := uuid.New().String()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // 30 minute timeout
+	// Derive job context with timeout from parent context
+	jobCtx, cancel := context.WithTimeout(ctx, 30*time.Minute) // 30 minute timeout
 
 	job := &Job{
-		ID:         jobID,
-		Status:     types.StatusPending,
-		Request:    req,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
-		cancelFunc: cancel,
+		ID:            jobID,
+		CorrelationID: req.CorrelationID,
+		Status:        types.StatusPending,
+		Request:       req,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+		cancelFunc:    cancel,
 	}
 
 	m.mu.Lock()
@@ -149,10 +156,10 @@ func (m *Manager) StartJob(req types.ProvisionRequest) (string, error) {
 	m.mu.Unlock()
 
 	// Persist to database
-	m.syncToDatabase(ctx, job)
+	m.syncToDatabase(jobCtx, job)
 
 	// Start job in background
-	go m.runJob(ctx, job)
+	go m.runJob(jobCtx, job)
 
 	return jobID, nil
 }
@@ -171,7 +178,7 @@ func (m *Manager) GetJobStatus(jobID string) (*types.StatusResponse, error) {
 		JobID:         job.ID,
 		Status:        job.Status,
 		Progress:      job.Progress,
-		CorrelationID: job.ID, // Use job ID as correlation ID
+		CorrelationID: job.CorrelationID,
 		CreatedAt:     job.CreatedAt,
 		UpdatedAt:     job.UpdatedAt,
 	}
@@ -204,9 +211,8 @@ func (m *Manager) CancelJob(jobID string) error {
 	}
 
 	job.cancelFunc()
-	job.Status = types.StatusFailed
+	job.Status = types.StatusCancelled
 	job.UpdatedAt = time.Now()
-	job.Error = fmt.Errorf("job cancelled by user")
 	m.mu.Unlock()
 
 	// Persist cancellation to database
@@ -217,6 +223,16 @@ func (m *Manager) CancelJob(jobID string) error {
 
 // runJob executes a provisioning job
 func (m *Manager) runJob(ctx context.Context, job *Job) {
+	// Start span for job lifecycle
+	tracer := otel.Tracer("libvirt-volume-provisioner")
+	ctx, span := tracer.Start(ctx, "runJob",
+		trace.WithAttributes(
+			attribute.String("job.id", job.ID),
+			attribute.String("job.image_url", job.Request.ImageURL),
+			attribute.String("job.volume_name", job.Request.VolumeName),
+		))
+	defer span.End()
+
 	// Acquire semaphore (limit concurrent operations)
 	select {
 	case m.semaphore <- struct{}{}:
@@ -225,6 +241,7 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 		job.Status = types.StatusFailed
 		job.UpdatedAt = time.Now()
 		m.syncToDatabase(ctx, job)
+		span.SetStatus(codes.Error, "job cancelled during semaphore acquisition")
 		return
 	}
 
@@ -235,6 +252,14 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 	defer func() {
 		job.UpdatedAt = time.Now()
 		m.syncToDatabase(ctx, job)
+		switch job.Status {
+		case types.StatusPending, types.StatusRunning, types.StatusCancelled:
+			// No action needed for these statuses
+		case types.StatusCompleted:
+			span.SetStatus(codes.Ok, "job completed successfully")
+		case types.StatusFailed:
+			span.SetStatus(codes.Error, job.Error.Error())
+		}
 	}()
 
 	// Execute provisioning steps
@@ -469,7 +494,7 @@ func (m *Manager) ListCachedImages() ([]*libvirt.ImageCache, error) {
 }
 
 // FetchImageToCache starts a job to fetch and cache an image without creating a volume
-func (m *Manager) FetchImageToCache(req types.FetchImageToCacheRequest) (string, error) {
+func (m *Manager) FetchImageToCache(ctx context.Context, req types.FetchImageToCacheRequest) (string, error) {
 	jobID := uuid.New().String()
 
 	job := &Job{
@@ -485,39 +510,56 @@ func (m *Manager) FetchImageToCache(req types.FetchImageToCacheRequest) (string,
 	m.jobs[jobID] = job
 	m.mu.Unlock()
 
-	// Start the job asynchronously
-	go m.runCacheJob(job)
+	// Start the job asynchronously with derived context
+	go m.runCacheJob(ctx, job)
 
 	return jobID, nil
 }
 
 // runCacheJob executes a cache-only job (download image to cache without volume creation)
-func (m *Manager) runCacheJob(job *Job) {
-	ctx, cancel := context.WithCancel(context.Background())
+func (m *Manager) runCacheJob(ctx context.Context, job *Job) {
+	// Start span for cache job
+	tracer := otel.Tracer("libvirt-volume-provisioner")
+	ctx, span := tracer.Start(ctx, "runCacheJob",
+		trace.WithAttributes(
+			attribute.String("job.id", job.ID),
+			attribute.String("job.image_url", job.Request.ImageURL),
+		))
+	defer span.End()
+
+	jobCtx, cancel := context.WithCancel(ctx)
 	job.cancelFunc = cancel
 
 	// Acquire semaphore (limit concurrent operations)
 	select {
 	case m.semaphore <- struct{}{}:
 		defer func() { <-m.semaphore }()
-	case <-ctx.Done():
+	case <-jobCtx.Done():
 		job.Status = types.StatusFailed
 		job.UpdatedAt = time.Now()
-		m.syncToDatabase(ctx, job)
+		m.syncToDatabase(jobCtx, job)
 		return
 	}
 
 	job.Status = types.StatusRunning
 	job.UpdatedAt = time.Now()
-	m.syncToDatabase(ctx, job)
+	m.syncToDatabase(jobCtx, job)
 
 	defer func() {
 		job.UpdatedAt = time.Now()
-		m.syncToDatabase(ctx, job)
+		m.syncToDatabase(jobCtx, job)
+		switch job.Status {
+		case types.StatusPending, types.StatusRunning, types.StatusCancelled:
+			// No action needed for these statuses
+		case types.StatusCompleted:
+			span.SetStatus(codes.Ok, "cache job completed successfully")
+		case types.StatusFailed:
+			span.SetStatus(codes.Error, job.Error.Error())
+		}
 	}()
 
 	// Get or download image to cache
-	imagePath, err := m.getOrDownloadImage(ctx, job.Request, job)
+	imagePath, err := m.getOrDownloadImage(jobCtx, job.Request, job)
 	if err != nil {
 		job.Status = types.StatusFailed
 		job.Error = err
@@ -537,7 +579,7 @@ func (m *Manager) CleanupCompletedJobs() {
 	// Keep only recent jobs
 	completed := make([]string, 0)
 	for id, job := range m.jobs {
-		if job.Status == types.StatusCompleted || job.Status == types.StatusFailed {
+		if job.Status == types.StatusCompleted || job.Status == types.StatusFailed || job.Status == types.StatusCancelled {
 			completed = append(completed, id)
 		}
 	}

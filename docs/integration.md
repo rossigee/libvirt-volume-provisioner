@@ -38,7 +38,7 @@ Use Ansible to provision VMs via the provisioner:
 ```yaml
 - name: Provision VM root volume
   uri:
-    url: "https://hypervisor.example.com:8080/api/v1/provision"
+    url: "https://hypervisor.example.com:8080/api/v1/jobs"
     method: POST
     client_cert: "/path/to/client.crt"
     client_key: "/path/to/client.key"
@@ -54,7 +54,7 @@ Use Ansible to provision VMs via the provisioner:
 
 - name: Wait for provisioning to complete
   uri:
-    url: "https://hypervisor.example.com:8080/api/v1/status/{{ provision_result.json.job_id }}"
+    url: "https://hypervisor.example.com:8080/api/v1/jobs/{{ provision_result.json.job_id }}"
     client_cert: "/path/to/client.crt"
     client_key: "/path/to/client.key"
     ca_path: "/path/to/ca.crt"
@@ -76,7 +76,7 @@ provider "libvirt" {
 resource "null_resource" "provision_volume" {
   provisioner "local-exec" {
     command = <<-EOT
-      curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
+      curl -X POST https://hypervisor.example.com:8080/api/v1/jobs \
         --cacert ${var.ca_cert} \
         --cert ${var.client_cert} \
         --key ${var.client_key} \
@@ -171,7 +171,7 @@ class LibvirtProvisioner:
             payload["correlation_id"] = correlation_id
 
         response = requests.post(
-            f"{self.base_url}/api/v1/provision",
+            f"{self.base_url}/api/v1/jobs",
             json=payload,
             cert=self.cert,
             verify=self.ca
@@ -182,7 +182,7 @@ class LibvirtProvisioner:
     def get_status(self, job_id):
         """Get job status"""
         response = requests.get(
-            f"{self.base_url}/api/v1/status/{job_id}",
+            f"{self.base_url}/api/v1/jobs/{job_id}",
             cert=self.cert,
             verify=self.ca
         )
@@ -194,7 +194,7 @@ class LibvirtProvisioner:
         start_time = time.time()
         while True:
             status = self.get_status(job_id)
-            if status["status"] in ["completed", "failed"]:
+            if status["status"] in ["completed", "failed", "cancelled"]:
                 return status
             if time.time() - start_time > timeout:
                 raise TimeoutError(f"Job {job_id} timed out after {timeout}s")
@@ -202,8 +202,8 @@ class LibvirtProvisioner:
 
     def cancel_job(self, job_id):
         """Cancel a running job"""
-        response = requests.delete(
-            f"{self.base_url}/api/v1/cancel/{job_id}",
+        response = requests.post(
+            f"{self.base_url}/api/v1/jobs/{job_id}/cancel",
             cert=self.cert,
             verify=self.ca
         )

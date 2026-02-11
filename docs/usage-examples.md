@@ -7,7 +7,7 @@ This guide provides practical examples of using the libvirt-volume-provisioner A
 First provisioning request - image is downloaded, cached with compression preserved, then converted to raw and populated to the LVM volume:
 
 ```bash
-curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
+curl -X POST https://hypervisor.example.com:8080/api/v1/jobs \
   --cacert /path/to/ca.crt \
   --cert /path/to/client.crt \
   --key /path/to/client.key \
@@ -34,7 +34,7 @@ curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
 Poll the status endpoint to monitor progress:
 
 ```bash
-curl https://hypervisor.example.com:8080/api/v1/status/550e8400-e29b-41d4-a716-446655440000 \
+curl https://hypervisor.example.com:8080/api/v1/jobs/550e8400-e29b-41d4-a716-446655440000 \
   --cacert /path/to/ca.crt \
   --cert /path/to/client.crt \
   --key /path/to/client.key
@@ -78,7 +78,7 @@ curl https://hypervisor.example.com:8080/api/v1/status/550e8400-e29b-41d4-a716-4
 Second request for the same image uses cached version - much faster:
 
 ```bash
-curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
+curl -X POST https://hypervisor.example.com:8080/api/v1/jobs \
   --cacert /path/to/ca.crt \
   --cert /path/to/client.crt \
   --key /path/to/client.key \
@@ -117,16 +117,19 @@ curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
 Cancel a running provisioning job:
 
 ```bash
-curl -X DELETE https://hypervisor.example.com:8080/api/v1/cancel/550e8400-e29b-41d4-a716-446655440000 \
+curl -X POST https://hypervisor.example.com:8080/api/v1/jobs/550e8400-e29b-41d4-a716-446655440000/cancel \
   --cacert /path/to/ca.crt \
   --cert /path/to/client.crt \
   --key /path/to/client.key
 ```
 
-**Response (204 No Content):**
+**Response (200 OK):**
 
-```
-(empty response body)
+```json
+{
+  "status": "cancelled",
+  "job_id": "550e8400-e29b-41d4-a716-446655440000"
+}
 ```
 
 ## Health Check
@@ -168,7 +171,7 @@ for i in {1..5}; do
   echo "Provisioning ${VOLUME_NAME}..."
 
   # Start provisioning
-  JOB_RESPONSE=$(curl -s -X POST "${PROVISIONER_URL}/api/v1/provision" \
+  JOB_RESPONSE=$(curl -s -X POST "${PROVISIONER_URL}/api/v1/jobs" \
     --cacert /path/to/ca.crt \
     --cert /path/to/client.crt \
     --key /path/to/client.key \
@@ -185,7 +188,7 @@ for i in {1..5}; do
 
   # Wait for completion
   while true; do
-    STATUS=$(curl -s "${PROVISIONER_URL}/api/v1/status/${JOB_ID}" \
+    STATUS=$(curl -s "${PROVISIONER_URL}/api/v1/jobs/${JOB_ID}" \
       --cacert /path/to/ca.crt \
       --cert /path/to/client.crt \
       --key /path/to/client.key)
@@ -216,7 +219,7 @@ echo "All VMs provisioned successfully!"
 If using API token authentication instead of mutual TLS:
 
 ```bash
-curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
+curl -X POST https://hypervisor.example.com:8080/api/v1/jobs \
   -H "Authorization: Bearer YOUR_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -230,7 +233,7 @@ curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
 Or using X-API-Token header:
 
 ```bash
-curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
+curl -X POST https://hypervisor.example.com:8080/api/v1/jobs \
   -H "X-API-Token: YOUR_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -295,7 +298,7 @@ curl -X POST https://hypervisor.example.com:8080/api/v1/cache/fetch \
 Monitor the cache fetch progress:
 
 ```bash
-curl https://hypervisor.example.com:8080/api/v1/status/550e8400-e29b-41d4-a716-446655440001 \
+curl https://hypervisor.example.com:8080/api/v1/jobs/550e8400-e29b-41d4-a716-446655440001 \
   --cacert /path/to/ca.crt \
   --cert /path/to/client.crt \
   --key /path/to/client.key

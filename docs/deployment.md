@@ -224,7 +224,7 @@ curl -f "${PROVISIONER_URL}/metrics" || exit 1
 
 # Test 3: Provision API (dry-run)
 echo "Testing provision API..."
-curl -f -X POST "${PROVISIONER_URL}/api/v1/provision" \
+curl -f -X POST "${PROVISIONER_URL}/api/v1/jobs" \
   -H "Content-Type: application/json" \
   -d '{
     "image_url": "https://minio.example.com/images/test.qcow2",

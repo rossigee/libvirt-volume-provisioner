@@ -20,7 +20,7 @@ type MockJobManager struct {
 	lastRequest    types.ProvisionRequest
 }
 
-func (m *MockJobManager) StartJob(req types.ProvisionRequest) (string, error) {
+func (m *MockJobManager) StartJob(ctx context.Context, req types.ProvisionRequest) (string, error) {
 	m.startJobCalled = true
 	m.lastRequest = req
 	return "test-job-id", nil
@@ -51,7 +51,7 @@ func (m *MockJobManager) ListCachedImages() ([]*libvirt.ImageCache, error) {
 	return []*libvirt.ImageCache{}, nil
 }
 
-func (m *MockJobManager) FetchImageToCache(req types.FetchImageToCacheRequest) (string, error) {
+func (m *MockJobManager) FetchImageToCache(ctx context.Context, req types.FetchImageToCacheRequest) (string, error) {
 	return "test-cache-job-id", nil
 }
 
@@ -86,9 +86,9 @@ func TestSetupRoutes(t *testing.T) {
 		routePaths[route.Method+" "+route.Path] = true
 	}
 
-	assert.True(t, routePaths["POST /api/v1/provision"])
-	assert.True(t, routePaths["GET /api/v1/status/:job_id"])
-	assert.True(t, routePaths["DELETE /api/v1/cancel/:job_id"])
+	assert.True(t, routePaths["POST /api/v1/jobs"])
+	assert.True(t, routePaths["GET /api/v1/jobs/:job_id"])
+	assert.True(t, routePaths["POST /api/v1/jobs/:job_id/cancel"])
 	assert.True(t, routePaths["GET /api/v1/cache/images"])
 	assert.True(t, routePaths["POST /api/v1/cache/fetch"])
 	assert.True(t, routePaths["GET /health"])
@@ -133,7 +133,7 @@ func TestProvisionVolume_InvalidJSON(t *testing.T) {
 	w := httptest.NewRecorder()
 	body := bytes.NewBufferString("invalid json")
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		"/api/v1/provision", body)
+		"/api/v1/jobs", body)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
@@ -157,7 +157,7 @@ func TestProvisionVolume_MissingFields(t *testing.T) {
 	w := httptest.NewRecorder()
 	body := bytes.NewBufferString("{}")
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		"/api/v1/provision", body)
+		"/api/v1/jobs", body)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
@@ -187,7 +187,7 @@ func TestProvisionVolume_ValidRequest(t *testing.T) {
 	w := httptest.NewRecorder()
 	body := bytes.NewBufferString(requestBody)
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		"/api/v1/provision", body)
+		"/api/v1/jobs", body)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 

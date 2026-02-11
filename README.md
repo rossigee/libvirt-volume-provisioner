@@ -63,6 +63,7 @@ See [Installation](./docs/installation.md) for detailed instructions.
 |-------|-------------|
 | [Architecture](./docs/architecture.md) | System design, workflow, and caching strategy |
 | [API Reference](./docs/api-reference.md) | Complete HTTP API documentation |
+| [OpenAPI Spec](./api.yaml) | Machine-readable OpenAPI 3.0.3 specification |
 | [Usage Examples](./docs/usage-examples.md) | Practical curl examples and integration patterns |
 | [Installation](./docs/installation.md) | Installation methods and deployment options |
 | [Configuration](./docs/configuration.md) | Environment variables and service setup |
@@ -93,7 +94,7 @@ Uses SHA256 checksums from MinIO `.sha256` files as cache keys for reliable cach
 ### Provision Volume
 
 ```bash
-curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
+curl -X POST https://hypervisor.example.com:8080/api/v1/jobs \
   --cert client.crt --key client.key --cacert ca.crt \
   -H "Content-Type: application/json" \
   -d '{
@@ -107,7 +108,7 @@ curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
 ### Check Status
 
 ```bash
-curl https://hypervisor.example.com:8080/api/v1/status/{job_id} \
+curl https://hypervisor.example.com:8080/api/v1/jobs/{job_id} \
   --cert client.crt --key client.key --cacert ca.crt
 ```
 

@@ -46,7 +46,7 @@ func (pc *ProvisionerClient) ProvisionVolume(req ProvisionRequest) (*ProvisionRe
 		return nil, err
 	}
 
-	resp, err := pc.httpClient.Post(pc.baseURL+"/api/v1/provision", "application/json", bytes.NewBuffer(jsonData))
+	resp, err := pc.httpClient.Post(pc.baseURL+"/api/v1/jobs", "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +65,7 @@ func (pc *ProvisionerClient) ProvisionVolume(req ProvisionRequest) (*ProvisionRe
 }
 
 func (pc *ProvisionerClient) GetJobStatus(jobID string) (*StatusResponse, error) {
-	resp, err := pc.httpClient.Get(pc.baseURL + "/api/v1/status/" + jobID)
+	resp, err := pc.httpClient.Get(pc.baseURL + "/api/v1/jobs/" + jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,7 @@ func (pc *ProvisionerClient) WaitForCompletion(jobID string, timeout time.Durati
 				return nil, err
 			}
 
-			if status.Status == "completed" || status.Status == "failed" {
+			if status.Status == "completed" || status.Status == "failed" || status.Status == "cancelled" {
 				return status, nil
 			}
 		}

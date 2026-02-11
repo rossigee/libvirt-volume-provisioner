@@ -99,7 +99,7 @@ chmod 644 ~/.config/libvirt-provisioner/ca.crt
 All API requests require the client certificate and key:
 
 ```bash
-curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
+curl -X POST https://hypervisor.example.com:8080/api/v1/jobs \
   --cacert ~/.config/libvirt-provisioner/ca.crt \
   --cert ~/.config/libvirt-provisioner/client.crt \
   --key ~/.config/libvirt-provisioner/client.key \
@@ -140,7 +140,7 @@ Environment="API_TOKENS_FILE=/etc/libvirt-volume-provisioner/tokens"
 #### Bearer Token Header
 
 ```bash
-curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
+curl -X POST https://hypervisor.example.com:8080/api/v1/jobs \
   -H "Authorization: Bearer e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" \
   -H "Content-Type: application/json" \
   -d '{ ... }'
@@ -149,7 +149,7 @@ curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
 #### X-API-Token Header
 
 ```bash
-curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
+curl -X POST https://hypervisor.example.com:8080/api/v1/jobs \
   -H "X-API-Token: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" \
   -H "Content-Type: application/json" \
   -d '{ ... }'

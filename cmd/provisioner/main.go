@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -21,13 +22,74 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/internal/minio"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	"go.opentelemetry.io/otel/trace"
 )
+
+var errOTLPNotConfigured = errors.New("OTLP not configured")
 
 // Build information - set at build time
 var (
 	version   = "dev"
 	buildTime = "unknown"
 )
+
+func initOTLP(ctx context.Context) (*sdktrace.TracerProvider, error) {
+	// Configure OTLP gRPC exporter
+	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if endpoint == "" {
+		return nil, errOTLPNotConfigured // OTLP not configured, skip
+	}
+
+	exporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithEndpoint(endpoint))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create OTLP exporter: %w", err)
+	}
+
+	// Create resource
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceNameKey.String("libvirt-volume-provisioner"),
+			semconv.ServiceVersionKey.String(version),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create resource: %w", err)
+	}
+
+	// Create tracer provider
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(res),
+	)
+	otel.SetTracerProvider(tp)
+
+	return tp, nil
+}
+
+// logCorrelationHook injects trace_id and span_id into logrus entries
+type logCorrelationHook struct{}
+
+func (h *logCorrelationHook) Levels() []logrus.Level {
+	return logrus.AllLevels
+}
+
+func (h *logCorrelationHook) Fire(entry *logrus.Entry) error {
+	span := trace.SpanFromContext(entry.Context)
+	if span != nil && span.IsRecording() {
+		spanContext := span.SpanContext()
+		if spanContext.IsValid() {
+			entry.Data["trace_id"] = spanContext.TraceID().String()
+			entry.Data["span_id"] = spanContext.SpanID().String()
+		}
+	}
+	return nil
+}
 
 func main() {
 	// Configure logrus for structured JSON logging
@@ -36,9 +98,29 @@ func main() {
 	})
 	logrus.SetLevel(logrus.InfoLevel)
 
+	// Add log correlation hook for trace context
+	logrus.AddHook(&logCorrelationHook{})
+
 	// Configure Gin
 	gin.SetMode(gin.ReleaseMode)
 	gin.DefaultWriter = logrus.StandardLogger().Writer()
+
+	// Initialize OTLP tracing
+	ctx := context.Background()
+	tp, err := initOTLP(ctx)
+	if err != nil && !errors.Is(err, errOTLPNotConfigured) {
+		logrus.WithError(err).Fatal("Failed to initialize OTLP tracing")
+	}
+	if tp != nil {
+		defer func() {
+			if err := tp.Shutdown(ctx); err != nil {
+				logrus.WithError(err).Error("Failed to shutdown tracer provider")
+			}
+		}()
+		logrus.Info("OTLP tracing initialized")
+	} else {
+		logrus.Info("OTLP tracing not configured (OTEL_EXPORTER_OTLP_ENDPOINT not set)")
+	}
 
 	// Log version information
 	logrus.WithFields(logrus.Fields{
@@ -105,6 +187,11 @@ func main() {
 
 	// Add global middleware
 	router.Use(gin.Recovery())
+
+	// Add OpenTelemetry Gin middleware for automatic HTTP span creation
+	if tp != nil {
+		router.Use(otelgin.Middleware("libvirt-volume-provisioner"))
+	}
 
 	// Initialize API handlers
 	apiHandler := api.NewHandler(jobManager, version)

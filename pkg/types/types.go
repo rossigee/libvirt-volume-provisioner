@@ -8,17 +8,16 @@ import "time"
 
 // ProvisionRequest represents a volume provisioning request.
 type ProvisionRequest struct {
-	ImageURL     string `binding:"required"       json:"image_url"`
-	VolumeName   string `binding:"required"       json:"volume_name"`
-	VolumeSizeGB int    `binding:"required,min=1" json:"volume_size_gb"`
-	ImageType    string `json:"image_type"`
+	ImageURL      string `binding:"required"              json:"image_url"`
+	VolumeName    string `binding:"required"              json:"volume_name"`
+	VolumeSizeGB  int    `binding:"required,min=1"        json:"volume_size_gb"`
+	ImageType     string `json:"image_type"`
+	CorrelationID string `json:"correlation_id,omitempty"`
 }
 
 // ProvisionResponse represents the response to a provisioning request.
 type ProvisionResponse struct {
-	JobID     string `json:"job_id"`
-	CacheHit  bool   `json:"cache_hit,omitempty"`
-	ImagePath string `json:"image_path,omitempty"`
+	JobID string `json:"job_id"`
 }
 
 // JobStatus represents the status of a provisioning job.
@@ -34,6 +33,8 @@ const (
 	StatusCompleted JobStatus = "completed"
 	// StatusFailed indicates the job finished with an error.
 	StatusFailed JobStatus = "failed"
+	// StatusCancelled indicates the job was cancelled by the user.
+	StatusCancelled JobStatus = "cancelled"
 )
 
 // ProgressInfo represents progress information for a job.
@@ -85,6 +86,8 @@ type CachedImageInfo struct {
 type ListCachedImagesResponse struct {
 	Images []CachedImageInfo `json:"images"`
 	Count  int               `json:"count"`
+	Offset int               `json:"offset"`
+	Limit  int               `json:"limit"`
 }
 
 // FetchImageToCacheRequest represents a request to fetch an image to cache.
@@ -94,7 +97,5 @@ type FetchImageToCacheRequest struct {
 
 // FetchImageToCacheResponse represents the response to a fetch image to cache request.
 type FetchImageToCacheResponse struct {
-	JobID     string `json:"job_id"`
-	CacheHit  bool   `json:"cache_hit,omitempty"`
-	ImagePath string `json:"image_path,omitempty"`
+	JobID string `json:"job_id"`
 }

@@ -13,6 +13,10 @@ import (
 
 	"github.com/rossigee/libvirt-volume-provisioner/internal/retry"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ProgressUpdater interface for updating job progress
@@ -100,16 +104,27 @@ func parseLvmRetryConfig(attemptsStr, backoffStr string) retry.Config {
 // CreateVolume creates a new LVM volume with exponential backoff retry
 // If volume exists, validates it matches requirements and reuses if compatible
 func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB int) error {
+	// Start span for LVM volume creation
+	tracer := otel.Tracer("libvirt-volume-provisioner")
+	ctx, span := tracer.Start(ctx, "CreateVolume",
+		trace.WithAttributes(
+			attribute.String("lvm.volume_name", volumeName),
+			attribute.Int("lvm.size_gb", sizeGB),
+			attribute.String("lvm.vg_name", m.vgName)))
+	defer span.End()
+
 	// Check if volume already exists
 	if m.volumeExists(volumeName) {
 		// Validate existing volume
 		if err := m.validateExistingVolume(volumeName, sizeGB); err != nil {
+			span.SetStatus(codes.Error, err.Error())
 			return fmt.Errorf("existing volume %s is incompatible: %w", volumeName, err)
 		}
 		logrus.WithFields(logrus.Fields{
 			"volume_name": volumeName,
 			"size_gb":     sizeGB,
 		}).Info("Reusing existing compatible volume")
+		span.SetStatus(codes.Ok, "reused existing compatible volume")
 		return nil
 	}
 
@@ -118,8 +133,10 @@ func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB in
 		return m.createVolumeOnce(volumeName, sizeGB)
 	})
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to create volume %s after retries: %w", volumeName, err)
 	}
+	span.SetStatus(codes.Ok, "volume created successfully")
 	return nil
 }
 
@@ -142,13 +159,24 @@ func (m *Manager) PopulateVolume(
 	imagePath, volumeName, imageType string,
 	updater ProgressUpdater,
 ) error {
+	// Start span for LVM volume population
+	tracer := otel.Tracer("libvirt-volume-provisioner")
+	ctx, span := tracer.Start(ctx, "PopulateVolume",
+		trace.WithAttributes(
+			attribute.String("lvm.volume_name", volumeName),
+			attribute.String("lvm.image_path", imagePath),
+			attribute.String("lvm.image_type", imageType)))
+	defer span.End()
+
 	// Wrap with retry logic
 	err := retry.WithRetry(ctx, m.retryConfig, func() error {
 		return m.populateVolumeOnce(imagePath, volumeName, imageType, updater)
 	})
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to populate volume %s after retries: %w", volumeName, err)
 	}
+	span.SetStatus(codes.Ok, "volume populated successfully")
 	return nil
 }
 
@@ -241,7 +269,15 @@ func (m *Manager) populateVolumeOnce(imagePath, volumeName, imageType string, up
 
 // DeleteVolume deletes an LVM volume
 func (m *Manager) DeleteVolume(volumeName string) error {
+	// Start span for LVM volume deletion
+	_, span := otel.Tracer("libvirt-volume-provisioner").Start(context.Background(), "DeleteVolume",
+		trace.WithAttributes(
+			attribute.String("lvm.volume_name", volumeName),
+			attribute.String("lvm.vg_name", m.vgName)))
+	defer span.End()
+
 	if !m.volumeExists(volumeName) {
+		span.SetStatus(codes.Error, "volume does not exist")
 		return fmt.Errorf("volume %s does not exist", volumeName)
 	}
 
@@ -254,9 +290,11 @@ func (m *Manager) DeleteVolume(volumeName string) error {
 			"error":       err,
 			"output":      string(output),
 		}).Error("Failed to delete LVM volume")
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to delete LVM volume %s: %w", volumeName, err)
 	}
 
+	span.SetStatus(codes.Ok, "volume deleted successfully")
 	return nil
 }
 

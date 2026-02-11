@@ -17,6 +17,10 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/retry"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ProgressUpdater interface for updating job progress.
@@ -158,14 +162,24 @@ func (c *Client) DownloadImage(ctx context.Context, imageURL string, updater Pro
 
 // DownloadImageToPath downloads an image from MinIO to a specific file path with exponential backoff retry
 func (c *Client) DownloadImageToPath(ctx context.Context, imageURL, destPath string, updater ProgressUpdater) error {
+	// Start span for MinIO download
+	tracer := otel.Tracer("libvirt-volume-provisioner")
+	ctx, span := tracer.Start(ctx, "DownloadImageToPath",
+		trace.WithAttributes(
+			attribute.String("minio.image_url", imageURL),
+			attribute.String("minio.dest_path", destPath)))
+	defer span.End()
+
 	// Wrap download with retry logic
 	err := retry.WithRetry(ctx, c.retryConfig, func() error {
 		return c.downloadImageToPathOnce(ctx, imageURL, destPath, updater)
 	})
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to download image from %s to %s after retries: %w", imageURL, destPath, err)
 	}
 
+	span.SetStatus(codes.Ok, "download completed successfully")
 	return nil
 }
 

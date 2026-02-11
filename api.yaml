@@ -24,6 +24,7 @@ paths:
       description: Returns the service health status
       tags:
         - Health
+      security: []
       responses:
         '200':
           description: Service is healthy
@@ -38,6 +39,7 @@ paths:
       description: Returns the service health status (Kubernetes compatible)
       tags:
         - Health
+      security: []
       responses:
         '200':
           description: Service is healthy
@@ -52,6 +54,7 @@ paths:
       description: Returns the service health status (Kubernetes compatible)
       tags:
         - Health
+      security: []
       responses:
         '200':
           description: Service is healthy
@@ -66,6 +69,7 @@ paths:
       description: Returns Prometheus-formatted metrics for monitoring
       tags:
         - Monitoring
+      security: []
       responses:
         '200':
           description: Metrics data
@@ -78,7 +82,7 @@ paths:
                   # TYPE libvirt_volume_provisioner_active_jobs gauge
                   libvirt_volume_provisioner_active_jobs 0
 
-  /api/v1/provision:
+  /api/v1/jobs:
     post:
       summary: Start volume provisioning job
       description: |
@@ -101,7 +105,6 @@ paths:
               volume_name: "vm-disk-001"
               volume_size_gb: 50
               image_type: "qcow2"
-              correlation_id: "optional-uuid"
       responses:
         '202':
           description: Job accepted for processing
@@ -124,7 +127,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /api/v1/status/{job_id}:
+  /api/v1/jobs/{job_id}:
     get:
       summary: Get provisioning job status
       description: Retrieves the current status and progress of a provisioning job
@@ -157,7 +160,7 @@ paths:
                       percent: 75.5
                       bytes_processed: 37748736000
                       bytes_total: 50000000000
-                    correlation_id: "550e8400-e29b-41d4-a716-446655440000"
+                      eta_sec: 120
                     created_at: "2024-01-14T10:30:00Z"
                     updated_at: "2024-01-14T10:35:00Z"
                 completed:
@@ -170,7 +173,6 @@ paths:
                       percent: 100
                       bytes_processed: 50000000000
                       bytes_total: 50000000000
-                    correlation_id: "550e8400-e29b-41d4-a716-446655440000"
                     cache_hit: true
                     image_path: "/var/lib/libvirt/images/ubuntu-20.04.qcow2"
                     created_at: "2024-01-14T10:30:00Z"
@@ -182,8 +184,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /api/v1/cancel/{job_id}:
-    delete:
+  /api/v1/jobs/{job_id}/cancel:
+    post:
       summary: Cancel a provisioning job
       description: Cancels a running provisioning job if it hasn't completed yet
       tags:
@@ -225,6 +227,93 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/cache/images:
+    get:
+      summary: List cached images
+      description: |
+        Returns information about all QCOW2 images currently cached locally on the hypervisor host.
+        Useful for monitoring cache usage and available images. Supports pagination.
+      tags:
+        - Cache
+      parameters:
+        - name: offset
+          in: query
+          required: false
+          description: Number of items to skip (default 0)
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of items to return (default 100)
+          schema:
+            type: integer
+            minimum: 1
+            default: 100
+      responses:
+        '200':
+          description: List of cached images
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListCachedImagesResponse'
+              example:
+                images:
+                  - path: "/var/lib/libvirt/images/ubuntu-20.04.qcow2"
+                    size: 2147483648
+                    checksum: "abc123def456..."
+                  - path: "/var/lib/libvirt/images/centos-8.qcow2"
+                    size: 4294967296
+                    checksum: "def789ghi012..."
+                count: 2
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/cache/fetch:
+    post:
+      summary: Fetch and cache an image
+      description: |
+        Downloads and caches a QCOW2 image from MinIO for future use (cache prewarming).
+        Does not create LVM volumes or perform conversions.
+        Returns a job ID for tracking the cache operation.
+      tags:
+        - Cache
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FetchImageToCacheRequest'
+            example:
+              image_url: "https://minio.example.com/images/ubuntu-20.04.qcow2"
+      responses:
+        '202':
+          description: Cache fetch job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FetchImageToCacheResponse'
+              example:
+                job_id: "550e8400-e29b-41d4-a716-446655440000"
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 components:
   schemas:
     ProvisionRequest:
@@ -250,14 +339,13 @@ components:
           example: 50
         image_type:
           type: string
-          enum: [qcow2, raw]
-          description: Format of the source image
+          description: Format of the source image (defaults to "qcow2" if omitted)
           default: "qcow2"
           example: "qcow2"
         correlation_id:
           type: string
-          description: Optional correlation ID for tracking requests across systems
-          example: "optional-uuid"
+          description: Optional correlation ID for request tracking
+          example: "provision-vm-001"
 
     ProvisionResponse:
       type: object
@@ -267,10 +355,6 @@ components:
           format: uuid
           description: Unique identifier for the provisioning job
           example: "550e8400-e29b-41d4-a716-446655440000"
-        status:
-          type: string
-          description: Initial status of the job
-          example: "accepted"
 
     StatusResponse:
       type: object
@@ -282,7 +366,7 @@ components:
           example: "550e8400-e29b-41d4-a716-446655440000"
         status:
           type: string
-          enum: [pending, running, completed, failed]
+          enum: [pending, running, completed, failed, cancelled]
           description: Current status of the job
           example: "running"
         progress:
@@ -293,10 +377,11 @@ components:
           example: "failed to download image: connection timeout"
         correlation_id:
           type: string
-          description: Correlation ID from the original request
+          description: Correlation ID for request tracking
           example: "550e8400-e29b-41d4-a716-446655440000"
         cache_hit:
           type: boolean
+          nullable: true
           description: Whether the image was served from cache (only present for completed jobs)
           example: true
         image_path:
@@ -337,6 +422,12 @@ components:
           format: int64
           description: Total number of bytes to process
           example: 50000000000
+        eta_sec:
+          type: integer
+          format: int64
+          nullable: true
+          description: Estimated seconds remaining (may be absent early in job)
+          example: 120
 
     HealthResponse:
       type: object
@@ -375,6 +466,64 @@ components:
           type: integer
           description: HTTP status code
           example: 400
+
+    CachedImageInfo:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Full filesystem path to the cached image
+          example: "/var/lib/libvirt/images/ubuntu-20.04.qcow2"
+        size:
+          type: integer
+          format: uint64
+          description: Image size in bytes
+          example: 2147483648
+        checksum:
+          type: string
+          description: SHA256 checksum of the image
+          example: "abc123def456..."
+
+    ListCachedImagesResponse:
+      type: object
+      properties:
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/CachedImageInfo'
+          description: Array of cached image objects (paginated)
+        count:
+          type: integer
+          description: Total number of cached images
+          example: 2
+        offset:
+          type: integer
+          description: Current offset in the result set
+          example: 0
+        limit:
+          type: integer
+          description: Maximum number of items returned
+          example: 100
+
+    FetchImageToCacheRequest:
+      type: object
+      required:
+        - image_url
+      properties:
+        image_url:
+          type: string
+          format: uri
+          description: URL of the image file in MinIO storage
+          example: "https://minio.example.com/images/ubuntu-20.04.qcow2"
+
+    FetchImageToCacheResponse:
+      type: object
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          description: Unique identifier for the cache fetch job
+          example: "550e8400-e29b-41d4-a716-446655440000"
 
   securitySchemes:
     ApiToken:

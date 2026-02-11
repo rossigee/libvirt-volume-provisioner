@@ -3,8 +3,11 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,13 +19,13 @@ import (
 
 // JobManager interface for job operations
 type JobManager interface {
-	StartJob(req types.ProvisionRequest) (string, error)
+	StartJob(ctx context.Context, req types.ProvisionRequest) (string, error)
 	GetJobStatus(jobID string) (*types.StatusResponse, error)
 	CancelJob(jobID string) error
 	GetActiveJobs() int
 	GetJobCacheInfo(jobID string) (cacheHit bool, imagePath string, err error)
 	ListCachedImages() ([]*libvirt.ImageCache, error)
-	FetchImageToCache(req types.FetchImageToCacheRequest) (string, error)
+	FetchImageToCache(ctx context.Context, req types.FetchImageToCacheRequest) (string, error)
 }
 
 // Handler handles HTTP API requests
@@ -98,9 +101,9 @@ func SetupRoutes(router *gin.Engine, handler *Handler, authMiddleware gin.Handle
 	api := router.Group("/api/v1")
 	api.Use(authMiddleware)
 	{
-		api.POST("/provision", handler.ProvisionVolume)
-		api.GET("/status/:job_id", handler.GetJobStatus)
-		api.DELETE("/cancel/:job_id", handler.CancelJob)
+		api.POST("/jobs", handler.ProvisionVolume)
+		api.GET("/jobs/:job_id", handler.GetJobStatus)
+		api.POST("/jobs/:job_id/cancel", handler.CancelJob)
 		api.GET("/cache/images", handler.ListCachedImages)
 		api.POST("/cache/fetch", handler.FetchImageToCache)
 	}
@@ -118,6 +121,11 @@ func (h *Handler) ProvisionVolume(c *gin.Context) {
 		return
 	}
 
+	// Default image type to qcow2
+	if req.ImageType == "" {
+		req.ImageType = "qcow2"
+	}
+
 	// Validate image URL format
 	if req.ImageURL == "" || req.VolumeName == "" {
 		c.JSON(http.StatusBadRequest, types.ErrorResponse{
@@ -129,7 +137,7 @@ func (h *Handler) ProvisionVolume(c *gin.Context) {
 	}
 
 	// Start provisioning job
-	jobID, err := h.jobManager.StartJob(req)
+	jobID, err := h.jobManager.StartJob(c.Request.Context(), req)
 	if err != nil {
 		jobsTotal.WithLabelValues("failed").Inc()
 		c.JSON(http.StatusInternalServerError, types.ErrorResponse{
@@ -189,6 +197,14 @@ func (h *Handler) CancelJob(c *gin.Context) {
 
 	err := h.jobManager.CancelJob(jobID)
 	if err != nil {
+		if strings.HasPrefix(err.Error(), "job not found") {
+			c.JSON(http.StatusNotFound, types.ErrorResponse{
+				Error:   "job not found",
+				Message: err.Error(),
+				Code:    404,
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, types.ErrorResponse{
 			Error:   "failed to cancel job",
 			Message: err.Error(),
@@ -215,19 +231,46 @@ func (h *Handler) ListCachedImages(c *gin.Context) {
 		return
 	}
 
+	// Parse pagination parameters
+	offset := 0
+	limit := 100
+	if v := c.Query("offset"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+	if v := c.Query("limit"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
 	// Convert to response format
-	images := make([]types.CachedImageInfo, len(cachedImages))
+	allImages := make([]types.CachedImageInfo, len(cachedImages))
 	for i, img := range cachedImages {
-		images[i] = types.CachedImageInfo{
+		allImages[i] = types.CachedImageInfo{
 			Path:     img.Path,
 			Size:     img.Size,
 			Checksum: img.Checksum,
 		}
 	}
 
+	// Apply pagination
+	total := len(allImages)
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	images := allImages[offset:end]
+
 	response := types.ListCachedImagesResponse{
 		Images: images,
-		Count:  len(images),
+		Count:  total,
+		Offset: offset,
+		Limit:  limit,
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -256,7 +299,7 @@ func (h *Handler) FetchImageToCache(c *gin.Context) {
 	}
 
 	// Start cache job
-	jobID, err := h.jobManager.FetchImageToCache(req)
+	jobID, err := h.jobManager.FetchImageToCache(c.Request.Context(), req)
 	if err != nil {
 		jobsTotal.WithLabelValues("failed").Inc()
 		c.JSON(http.StatusInternalServerError, types.ErrorResponse{

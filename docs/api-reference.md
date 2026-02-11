@@ -2,6 +2,8 @@
 
 The libvirt-volume-provisioner provides a RESTful HTTP API for managing volume provisioning operations.
 
+For the machine-readable OpenAPI 3.0.3 specification, see [`api.yaml`](../api.yaml) in the repository root.
+
 ## Base URL
 
 ```
@@ -10,15 +12,17 @@ https://hypervisor.example.com:8080/api/v1
 
 ## Authentication
 
-All API requests require authentication via:
+All `/api/v1/*` requests require authentication via:
 - **Primary**: X.509 client certificates (mutual TLS)
-- **Fallback**: HMAC-SHA256 API tokens for simpler deployments
+- **Fallback**: HMAC-SHA256 API tokens via `X-API-Token` header
+
+Health, metrics, and liveness endpoints do not require authentication.
 
 See [Authentication](./authentication.md) for setup details.
 
 ## Endpoints
 
-### POST /api/v1/provision
+### POST /api/v1/jobs
 
 Start a volume provisioning job.
 
@@ -37,19 +41,18 @@ Start a volume provisioning job.
   "image_url": "https://minio.example.com/images/ubuntu-20.04.qcow2",
   "volume_name": "itx-master-controlplane-1",
   "volume_size_gb": 50,
-  "image_type": "qcow2",
-  "correlation_id": "optional-uuid"
+  "image_type": "qcow2"
 }
 ```
 
 **Request Fields:**
 - `image_url` (required): Full URL to the image in MinIO
 - `volume_name` (required): Name of the LVM volume to create/reuse
-- `volume_size_gb` (required): Desired volume size in GB
-- `image_type` (required): Image format (e.g., "qcow2", "raw")
-- `correlation_id` (optional): UUID for request tracking and logging
+- `volume_size_gb` (required, min=1): Desired volume size in GB
+- `image_type` (optional): Image format, defaults to "qcow2" (e.g., "qcow2", "raw")
+- `correlation_id` (optional): Correlation ID for request tracking
 
-**Response (Success - 201 Created):**
+**Response (Success - 202 Accepted):**
 
 ```json
 {
@@ -62,7 +65,8 @@ Start a volume provisioning job.
 ```json
 {
   "error": "invalid request",
-  "details": "volume_size_gb must be greater than 0"
+  "message": "image_url and volume_name are required",
+  "code": 400
 }
 ```
 
@@ -73,7 +77,7 @@ Start a volume provisioning job.
 
 ---
 
-### GET /api/v1/status/{job_id}
+### GET /api/v1/jobs/{job_id}
 
 Get the status of a provisioning job.
 
@@ -90,11 +94,11 @@ Get the status of a provisioning job.
     "stage": "downloading",
     "percent": 45,
     "bytes_processed": 22500000000,
-    "bytes_total": 50000000000
+    "bytes_total": 50000000000,
+    "eta_sec": 120
   },
-  "correlation_id": "550e8400-e29b-41d4-a716-446655440000",
-  "cache_hit": false,
-  "image_path": "/var/lib/libvirt/images/ubuntu-20.04.qcow2"
+  "created_at": "2024-01-14T10:30:00Z",
+  "updated_at": "2024-01-14T10:35:00Z"
 }
 ```
 
@@ -112,7 +116,9 @@ Get the status of a provisioning job.
   },
   "correlation_id": "550e8400-e29b-41d4-a716-446655440000",
   "cache_hit": true,
-  "image_path": "/var/lib/libvirt/images/ubuntu-20.04.qcow2"
+  "image_path": "/var/lib/libvirt/images/ubuntu-20.04.qcow2",
+  "created_at": "2024-01-14T10:30:00Z",
+  "updated_at": "2024-01-14T10:40:00Z"
 }
 ```
 
@@ -122,55 +128,53 @@ Get the status of a provisioning job.
 {
   "job_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "failed",
-  "progress": null,
-  "correlation_id": "550e8400-e29b-41d4-a716-446655440000",
   "error": "failed to populate volume: no space left on device",
-  "cache_hit": false,
-  "image_path": null
+  "created_at": "2024-01-14T10:30:00Z",
+  "updated_at": "2024-01-14T10:40:00Z"
 }
 ```
 
 **Response Fields:**
 - `job_id`: Unique identifier for the job
 - `status`: One of: `pending`, `running`, `completed`, `failed`, `cancelled`
-- `progress`: Progress information (null if not applicable)
+- `progress`: Progress information (omitted if not applicable)
   - `stage`: Current operation (e.g., "downloading", "converting", "populating", "finalizing")
   - `percent`: Completion percentage (0-100)
   - `bytes_processed`: Bytes processed so far
   - `bytes_total`: Total bytes to process
-- `correlation_id`: UUID for request tracking
-- `cache_hit`: Whether the image was retrieved from cache
-- `image_path`: Path to the cached/populated image (null on failure)
-- `error`: Error message if status is failed
-
-**Job Statuses:**
-- `pending`: Job queued, waiting to start
-- `running`: Job actively provisioning
-- `completed`: Job finished successfully
-- `failed`: Job failed (check error field)
-- `cancelled`: Job was cancelled
+  - `eta_sec`: Estimated seconds remaining (may be absent early in job)
+- `correlation_id`: UUID for request tracking (omitted if not set)
+- `cache_hit`: Whether the image was retrieved from cache (omitted if not yet determined)
+- `image_path`: Path to the cached/populated image (omitted on failure)
+- `error`: Error message (only present when status is `failed`)
+- `created_at`: Job creation timestamp (RFC 3339)
+- `updated_at`: Last update timestamp (RFC 3339)
 
 ---
 
-### DELETE /api/v1/cancel/{job_id}
+### POST /api/v1/jobs/{job_id}/cancel
 
 Cancel a running provisioning job.
 
 **Path Parameters:**
 - `job_id`: The UUID of the job to cancel
 
-**Response (Success - 204 No Content):**
-
-```
-(empty response body)
-```
-
-**Response (Already Complete - 400 Bad Request):**
+**Response (Success - 200 OK):**
 
 ```json
 {
-  "error": "invalid request",
-  "details": "cannot cancel job in 'completed' status"
+  "status": "cancelled",
+  "job_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Response (Cannot Cancel - 400 Bad Request):**
+
+```json
+{
+  "error": "failed to cancel job",
+  "message": "cannot cancel job in 'completed' status",
+  "code": 400
 }
 ```
 
@@ -178,8 +182,9 @@ Cancel a running provisioning job.
 
 ```json
 {
-  "error": "not found",
-  "details": "job not found"
+  "error": "job not found",
+  "message": "job not found",
+  "code": 404
 }
 ```
 
@@ -193,6 +198,11 @@ List all cached images on the hypervisor host.
 - Returns information about all QCOW2 images currently cached locally
 - Includes image path, size, and checksum for each cached image
 - Useful for monitoring cache usage and available images
+- Supports pagination via `offset` and `limit` query parameters
+
+**Query Parameters:**
+- `offset` (optional, default=0): Number of items to skip
+- `limit` (optional, default=100): Maximum number of items to return
 
 **Response (Success - 200 OK):**
 
@@ -215,11 +225,13 @@ List all cached images on the hypervisor host.
 ```
 
 **Response Fields:**
-- `images`: Array of cached image objects
+- `images`: Array of cached image objects (paginated)
   - `path`: Full filesystem path to the cached image
   - `size`: Image size in bytes
   - `checksum`: SHA256 checksum of the image
 - `count`: Total number of cached images
+- `offset`: Current offset in the result set
+- `limit`: Maximum number of items returned
 
 ---
 
@@ -257,7 +269,8 @@ Fetch and cache an image without creating a volume (prewarming).
 ```json
 {
   "error": "invalid request",
-  "details": "image_url is required"
+  "message": "image_url is required",
+  "code": 400
 }
 ```
 
@@ -267,15 +280,20 @@ Fetch and cache an image without creating a volume (prewarming).
 
 ### GET /health
 
-Basic health check endpoint.
+Basic health check endpoint. No authentication required.
 
 **Response (200 OK):**
 
 ```json
 {
-  "status": "healthy"
+  "status": "healthy",
+  "timestamp": "2024-01-14T10:30:00Z",
+  "version": "1.0.0",
+  "uptime": "2h30m45s"
 }
 ```
+
+Returns `"status": "degraded"` when more than 2 jobs are active.
 
 ### GET /healthz
 
@@ -291,7 +309,7 @@ Kubernetes-compatible liveness probe (same as /health).
 
 ### GET /metrics
 
-Prometheus-compatible metrics endpoint.
+Prometheus-compatible metrics endpoint. No authentication required.
 
 **Format:** Prometheus text exposition format
 
@@ -308,22 +326,20 @@ Prometheus-compatible metrics endpoint.
 ### HTTP Status Codes
 
 - `200 OK` - Request succeeded
-- `201 Created` - Resource created successfully
-- `204 No Content` - Request succeeded with no content
+- `202 Accepted` - Job accepted for async processing
 - `400 Bad Request` - Invalid request parameters
-- `401 Unauthorized` - Authentication failed
-- `403 Forbidden` - Insufficient permissions
 - `404 Not Found` - Resource not found
-- `409 Conflict` - Resource conflict (e.g., volume already exists but is incompatible)
 - `500 Internal Server Error` - Server error
 
 ### Error Response Format
 
+All errors follow a consistent structure:
+
 ```json
 {
-  "error": "error_code",
-  "details": "human-readable description",
-  "correlation_id": "optional-uuid-for-tracking"
+  "error": "error_category",
+  "message": "human-readable description",
+  "code": 400
 }
 ```
 
@@ -349,4 +365,3 @@ Content-Type: application/json
 Content-Type: application/json
 X-Request-ID: correlation-id-uuid
 ```
-
