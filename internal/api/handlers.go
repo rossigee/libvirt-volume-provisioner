@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 )
 
@@ -20,6 +21,8 @@ type JobManager interface {
 	CancelJob(jobID string) error
 	GetActiveJobs() int
 	GetJobCacheInfo(jobID string) (cacheHit bool, imagePath string, err error)
+	ListCachedImages() ([]*libvirt.ImageCache, error)
+	FetchImageToCache(req types.FetchImageToCacheRequest) (string, error)
 }
 
 // Handler handles HTTP API requests
@@ -98,6 +101,8 @@ func SetupRoutes(router *gin.Engine, handler *Handler, authMiddleware gin.Handle
 		api.POST("/provision", handler.ProvisionVolume)
 		api.GET("/status/:job_id", handler.GetJobStatus)
 		api.DELETE("/cancel/:job_id", handler.CancelJob)
+		api.GET("/cache/images", handler.ListCachedImages)
+		api.POST("/cache/fetch", handler.FetchImageToCache)
 	}
 }
 
@@ -196,6 +201,80 @@ func (h *Handler) CancelJob(c *gin.Context) {
 		"status": "cancelled",
 		"job_id": jobID,
 	})
+}
+
+// ListCachedImages returns a list of all cached images
+func (h *Handler) ListCachedImages(c *gin.Context) {
+	cachedImages, err := h.jobManager.ListCachedImages()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{
+			Error:   "failed to list cached images",
+			Message: err.Error(),
+			Code:    500,
+		})
+		return
+	}
+
+	// Convert to response format
+	images := make([]types.CachedImageInfo, len(cachedImages))
+	for i, img := range cachedImages {
+		images[i] = types.CachedImageInfo{
+			Path:     img.Path,
+			Size:     img.Size,
+			Checksum: img.Checksum,
+		}
+	}
+
+	response := types.ListCachedImagesResponse{
+		Images: images,
+		Count:  len(images),
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// FetchImageToCache handles requests to fetch an image to cache
+func (h *Handler) FetchImageToCache(c *gin.Context) {
+	var req types.FetchImageToCacheRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, types.ErrorResponse{
+			Error:   "invalid request",
+			Message: err.Error(),
+			Code:    400,
+		})
+		return
+	}
+
+	// Validate image URL format
+	if req.ImageURL == "" {
+		c.JSON(http.StatusBadRequest, types.ErrorResponse{
+			Error:   "invalid request",
+			Message: "image_url is required",
+			Code:    400,
+		})
+		return
+	}
+
+	// Start cache job
+	jobID, err := h.jobManager.FetchImageToCache(req)
+	if err != nil {
+		jobsTotal.WithLabelValues("failed").Inc()
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{
+			Error:   "failed to start cache fetch",
+			Message: err.Error(),
+			Code:    500,
+		})
+		return
+	}
+
+	// Update metrics
+	jobsTotal.WithLabelValues("started").Inc()
+
+	response := types.FetchImageToCacheResponse{
+		JobID: jobID,
+	}
+
+	c.JSON(http.StatusAccepted, response)
 }
 
 // HealthCheck provides service health information

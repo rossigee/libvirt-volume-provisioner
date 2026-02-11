@@ -73,3 +73,28 @@ type HealthResponse struct {
 	Version   string    `json:"version"`
 	Uptime    string    `json:"uptime"`
 }
+
+// CachedImageInfo represents information about a cached image.
+type CachedImageInfo struct {
+	Path     string `json:"path"`
+	Size     uint64 `json:"size"`
+	Checksum string `json:"checksum"`
+}
+
+// ListCachedImagesResponse represents the response for listing cached images.
+type ListCachedImagesResponse struct {
+	Images []CachedImageInfo `json:"images"`
+	Count  int               `json:"count"`
+}
+
+// FetchImageToCacheRequest represents a request to fetch an image to cache.
+type FetchImageToCacheRequest struct {
+	ImageURL string `binding:"required" json:"image_url"`
+}
+
+// FetchImageToCacheResponse represents the response to a fetch image to cache request.
+type FetchImageToCacheResponse struct {
+	JobID     string `json:"job_id"`
+	CacheHit  bool   `json:"cache_hit,omitempty"`
+	ImagePath string `json:"image_path,omitempty"`
+}

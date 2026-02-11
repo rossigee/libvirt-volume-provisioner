@@ -263,3 +263,69 @@ func (pm *PoolManager) DeleteImage(imagePath string) error {
 
 	return nil
 }
+
+// ListCachedImages returns a list of all cached images
+func (pm *PoolManager) ListCachedImages() ([]*ImageCache, error) {
+	// Ensure cache directory exists
+	if err := os.MkdirAll(pm.poolPath, 0o750); err != nil {
+		return nil, fmt.Errorf("failed to access cache directory: %w", err)
+	}
+
+	// Read directory entries
+	entries, err := os.ReadDir(pm.poolPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read cache directory: %w", err)
+	}
+
+	var cachedImages []*ImageCache
+
+	for _, entry := range entries {
+		// Look for checksum files (.sha256 extension)
+		if !strings.HasSuffix(entry.Name(), ".sha256") {
+			continue
+		}
+
+		// Extract cache key from checksum filename (remove .sha256 suffix)
+		cacheKey := strings.TrimSuffix(entry.Name(), ".sha256")
+
+		// Get full path of checksum file
+		checksumFile := filepath.Join(pm.poolPath, entry.Name())
+
+		// Get corresponding image path
+		imagePath := filepath.Join(pm.poolPath, cacheKey)
+
+		// Check if image file exists
+		fileInfo, err := os.Stat(imagePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Orphaned checksum file - log warning but skip
+				logrus.WithFields(logrus.Fields{
+					"cache_key":     cacheKey,
+					"checksum_file": checksumFile,
+					"image_path":    imagePath,
+				}).Warn("Orphaned checksum file - image file missing")
+			}
+			continue
+		}
+
+		// Create ImageCache entry
+		size := fileInfo.Size()
+		if size < 0 {
+			logrus.WithFields(logrus.Fields{
+				"cache_key":  cacheKey,
+				"image_path": imagePath,
+			}).Warn("Invalid file size for cached image")
+			continue
+		}
+
+		cache := &ImageCache{
+			Path:     imagePath,
+			Size:     uint64(size),
+			Checksum: cacheKey,
+		}
+
+		cachedImages = append(cachedImages, cache)
+	}
+
+	return cachedImages, nil
+}
