@@ -241,3 +241,63 @@ curl -X POST https://hypervisor.example.com:8080/api/v1/provision \
   }'
 ```
 
+## Cache Management
+
+### Listing Cached Images
+
+Check what images are currently cached on the hypervisor:
+
+```bash
+curl https://hypervisor.example.com:8080/api/v1/cache/images \
+  --cacert /path/to/ca.crt \
+  --cert /path/to/client.crt \
+  --key /path/to/client.key
+```
+
+**Response:**
+
+```json
+{
+  "images": [
+    {
+      "path": "/var/lib/libvirt/images/ubuntu-20.04.qcow2",
+      "size": 2147483648,
+      "checksum": "abc123def456..."
+    }
+  ],
+  "count": 1
+}
+```
+
+### Prewarming the Cache
+
+Pre-download images that will be frequently used to speed up future provisioning:
+
+```bash
+curl -X POST https://hypervisor.example.com:8080/api/v1/cache/fetch \
+  --cacert /path/to/ca.crt \
+  --cert /path/to/client.crt \
+  --key /path/to/client.key \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_url": "https://minio.example.com/images/ubuntu-22.04.qcow2"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440001"
+}
+```
+
+Monitor the cache fetch progress:
+
+```bash
+curl https://hypervisor.example.com:8080/api/v1/status/550e8400-e29b-41d4-a716-446655440001 \
+  --cacert /path/to/ca.crt \
+  --cert /path/to/client.crt \
+  --key /path/to/client.key
+```
+
