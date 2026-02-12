@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-02-12
+
+### Added
+- **Production Readiness**: Comprehensive systemd service hardening with security best practices
+- **Database Backup**: Automated daily database backups with systemd timer and retention policy
+- **Enhanced Testing**: Expanded test coverage from 27.4% to 41.6% with 9 new test cases
+- **OpenTelemetry**: Fixed tracing configuration (gRPC port 4317) and added connection validation
+- **Docker Host Image**: Ubuntu 24.04 cloud image prepared for Docker host provisioning
+- **Repository Security**: Complete removal of sensitive files from git history (devices.json, binaries, artifacts)
+
+### Changed
+- **Database Configuration**: Fixed environment variable mismatch (DB_PATH vs DATABASE_PATH)
+- **MinIO TLS**: Added InsecureSkipVerify support for self-signed certificates
+- **Makefile**: Enhanced Debian package building with security-hardened systemd service
+- **CI/CD**: Improved build reliability and Docker image publishing to GHCR
+
+### Fixed
+- **Critical Bug**: Database initialization failure due to incorrect environment variable
+- **Test Panics**: Resolved nil pointer dereferences in test environment detection
+- **Git History**: Cleaned repository of accidentally committed binaries, coverage reports, and sensitive data
+- **OTLP Tracing**: Fixed gRPC endpoint configuration preventing trace export
+- **Linting**: Resolved gosec G402 TLS warning and line length violations
+
+### Security
+- **Systemd Hardening**: Added NoNewPrivileges, PrivateTmp, ProtectHome, ProtectSystem, and ReadWritePaths restrictions
+- **Data Protection**: Removed sensitive infrastructure data (devices.json) from repository history
+- **Binary Security**: Eliminated committed binaries that could contain sensitive build information
+- **TLS Security**: Proper handling of self-signed certificates with security annotations
+
+### Developer Experience
+- **Test Quality**: Significant improvement in test coverage and reliability
+- **Repository Health**: Clean git history with only appropriate files tracked
+- **Build Reliability**: Fixed CI/CD pipeline issues and improved error handling
+
+## [0.4.0] - 2026-02-11
+
+### Added
+- OpenTelemetry integration for distributed tracing with gRPC export
+- Comprehensive logging with trace correlation using Logrus hooks
+- Docker containerization with multi-stage builds and security hardening
+- GitHub Actions CI/CD pipeline with automated testing and Docker publishing
+- GitHub Container Registry (GHCR) integration for container distribution
+
+### Changed
+- Enhanced API error handling with structured error responses
+- Improved database schema with proper migrations and error handling
+- Modernized Go module dependencies and build process
+- Refactored job processing with improved concurrency and error recovery
+
+### Fixed
+- Race conditions in job processing and database operations
+- Memory leaks in long-running job operations
+- API response inconsistencies and missing error details
+- Docker build issues with libvirt dependencies
+
+### Security
+- Added request validation and input sanitization
+- Implemented proper authentication token handling
+- Enhanced TLS certificate validation
+- Added security headers and CORS protection
+
 ## [0.3.0] - 2026-01-27
 
 ### Added

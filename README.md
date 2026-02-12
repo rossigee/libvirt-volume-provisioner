@@ -27,8 +27,8 @@ The `libvirt-volume-provisioner` runs as a systemd service on hypervisor hosts a
 ### Debian Package (Recommended)
 
 ```bash
-wget https://github.com/rossigee/libvirt-volume-provisioner/releases/download/v0.4.0/libvirt-volume-provisioner_0.4.0_amd64.deb
-sudo apt install ./libvirt-volume-provisioner_0.4.0_amd64.deb
+wget https://github.com/rossigee/libvirt-volume-provisioner/releases/download/v0.5.0/libvirt-volume-provisioner_0.5.0_amd64.deb
+sudo apt install ./libvirt-volume-provisioner_0.5.0_amd64.deb
 sudo systemctl enable --now libvirt-volume-provisioner.socket
 ```
 
