@@ -139,8 +139,9 @@ func (m *Manager) RecoverJobs() error {
 func (m *Manager) StartJob(ctx context.Context, req types.ProvisionRequest) (string, error) {
 	jobID := uuid.New().String()
 
-	// Derive job context with timeout from parent context
-	jobCtx, cancel := context.WithTimeout(ctx, 30*time.Minute) // 30 minute timeout
+	// Create detached context with timeout - don't use request context as parent
+	// because it will be canceled when the HTTP request completes
+	jobCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // 30 minute timeout
 
 	job := &Job{
 		ID:            jobID,
@@ -157,10 +158,10 @@ func (m *Manager) StartJob(ctx context.Context, req types.ProvisionRequest) (str
 	m.mu.Unlock()
 
 	// Persist to database
-	m.syncToDatabase(jobCtx, job)
+	m.syncToDatabase(jobCtx, job) //nolint:contextcheck
 
 	// Start job in background
-	go m.runJob(jobCtx, job)
+	go m.runJob(jobCtx, job) //nolint:contextcheck
 
 	return jobID, nil
 }

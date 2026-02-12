@@ -107,6 +107,9 @@ func SetupRoutes(router *gin.Engine, handler *Handler, authMiddleware gin.Handle
 		api.GET("/cache/images", handler.ListCachedImages)
 		api.POST("/cache/fetch", handler.FetchImageToCache)
 	}
+
+	// Additional provision route for compatibility
+	router.POST("/provision", authMiddleware, handler.ProvisionVolume)
 }
 
 // ProvisionVolume handles volume provisioning requests
