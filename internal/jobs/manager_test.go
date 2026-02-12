@@ -217,8 +217,6 @@ func TestStartJob(t *testing.T) {
 		CorrelationID: "test-correlation-id",
 	}
 
-	// Note: This test will create a job but the goroutine will panic due to nil dependencies
-	// In a real test suite, we'd mock all the dependencies
 	jobID, err := manager.StartJob(context.Background(), req)
 
 	assert.NoError(t, err)
@@ -233,6 +231,9 @@ func TestStartJob(t *testing.T) {
 	assert.NotZero(t, job.CreatedAt)
 	assert.NotZero(t, job.UpdatedAt)
 	assert.NotNil(t, job.cancelFunc)
+
+	// Cancel the job immediately to prevent the goroutine from panicking due to nil dependencies
+	job.cancelFunc()
 }
 
 // TestStartJob_MultipleJobs tests starting multiple jobs
@@ -261,6 +262,10 @@ func TestStartJob_MultipleJobs(t *testing.T) {
 	assert.NoError(t, err2)
 	assert.NotEqual(t, jobID1, jobID2)
 	assert.Len(t, manager.jobs, 2)
+
+	// Cancel jobs immediately to prevent goroutine panics due to nil dependencies
+	manager.jobs[jobID1].cancelFunc()
+	manager.jobs[jobID2].cancelFunc()
 }
 
 // TestGetJobStatus tests retrieving job status

@@ -223,6 +223,14 @@ func (m *Manager) CancelJob(jobID string) error {
 
 // runJob executes a provisioning job
 func (m *Manager) runJob(ctx context.Context, job *Job) {
+	// Check if dependencies are available (for unit tests that don't initialize them)
+	if m.minioClient == nil || m.lvmManager == nil || m.libvirtPool == nil || m.store == nil {
+		job.Status = types.StatusFailed
+		job.Error = fmt.Errorf("job manager dependencies not initialized")
+		job.UpdatedAt = time.Now()
+		return
+	}
+
 	// Start span for job lifecycle
 	tracer := otel.Tracer("libvirt-volume-provisioner")
 	ctx, span := tracer.Start(ctx, "runJob",
