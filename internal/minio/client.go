@@ -4,9 +4,11 @@ package minio
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -90,13 +92,32 @@ func NewClient() (*Client, error) {
 		return nil, fmt.Errorf("invalid MINIO_ENDPOINT '%s': missing hostname", endpoint)
 	}
 
-	// Create MinIO client
-	minioClient, err := minio.New(u.Host, &minio.Options{
+	// Create MinIO client with TLS configuration
+	options := &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
 		Secure: u.Scheme == "https",
-	})
+	}
+
+	// Configure TLS to accept self-signed certificates if needed
+	if u.Scheme == "https" {
+		options.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, // #nosec G402 -- Allow self-signed certificates for MinIO
+			},
+		}
+	}
+
+	minioClient, err := minio.New(u.Host, options)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create MinIO client for %s: %w", u.Host, err)
+	}
+
+	// Test the connection by listing buckets
+	_, err = minioClient.ListBuckets(context.Background())
+	if err != nil {
+		logrus.WithError(err).Warn("Failed to list buckets - MinIO connection test failed")
+	} else {
+		logrus.Info("MinIO connection test successful")
 	}
 
 	// Configure retry logic

@@ -139,7 +139,7 @@ func main() {
 		host = "0.0.0.0"
 	}
 
-	dbPath := os.Getenv("DATABASE_PATH")
+	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
 		dbPath = "./provisioner.db"
 	}

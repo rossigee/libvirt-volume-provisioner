@@ -65,6 +65,11 @@ deb: build-linux
 	# Copy binary
 	cp $(BINARY_UNIX) $(DEB_BUILD_DIR)/usr/bin/$(BINARY_NAME)
 
+	# Copy backup script
+	mkdir -p $(DEB_BUILD_DIR)/usr/local/bin
+	cp scripts/backup-db.sh $(DEB_BUILD_DIR)/usr/local/bin/$(DEB_NAME)-backup
+	chmod 755 $(DEB_BUILD_DIR)/usr/local/bin/$(DEB_NAME)-backup
+
 	# Create control file
 	@echo "Package: $(DEB_NAME)" > $(DEB_BUILD_DIR)/DEBIAN/control
 	@echo "Version: $(DEB_VERSION)" >> $(DEB_BUILD_DIR)/DEBIAN/control
@@ -78,8 +83,27 @@ deb: build-linux
 	@echo " object storage, converting QCOW2 images to raw format, and populating" >> $(DEB_BUILD_DIR)/DEBIAN/control
 	@echo " LVM volumes with VM disk data." >> $(DEB_BUILD_DIR)/DEBIAN/control
 
-	# Create systemd service file
-	@echo "[Unit]" > $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
+	# Copy systemd service file
+	cp libvirt-volume-provisioner.service $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
+
+	# Create database backup service
+	@echo "[Unit]" > $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.service
+	@echo "Description=Libvirt Volume Provisioner Database Backup" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.service
+	@echo "" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.service
+	@echo "[Service]" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.service
+	@echo "Type=oneshot" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.service
+	@echo "ExecStart=/usr/local/bin/$(DEB_NAME)-backup" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.service
+
+	# Create database backup timer
+	@echo "[Unit]" > $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.timer
+	@echo "Description=Daily Libvirt Volume Provisioner Database Backup" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.timer
+	@echo "" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.timer
+	@echo "[Timer]" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.timer
+	@echo "OnCalendar=daily" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.timer
+	@echo "Persistent=true" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.timer
+	@echo "" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.timer
+	@echo "[Install]" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.timer
+	@echo "WantedBy=timers.target" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.timer
 	@echo "Description=Libvirt Volume Provisioner" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
 	@echo "After=network.target" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
 	@echo "" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service

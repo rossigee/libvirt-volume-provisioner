@@ -1,0 +1,38 @@
+[Unit]
+Description=Libvirt Volume Provisioner
+After=network.target libvirtd.service
+Requires=libvirtd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=libvirt-volume-provisioner
+Group=libvirt-volume-provisioner
+EnvironmentFile=-/etc/default/libvirt-volume-provisioner
+ExecStart=/usr/bin/libvirt-volume-provisioner
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/libvirt-volume-provisioner,/var/lib/libvirt/images,/tmp,/run/lock/lvm
+RestrictSUIDSGID=true
+PrivateDevices=no
+
+# Resource limits
+MemoryMax=512M
+LimitNOFILE=65536
+CPUQuota=50%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

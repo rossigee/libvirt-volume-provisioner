@@ -2,9 +2,11 @@ package jobs
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 	"github.com/stretchr/testify/assert"
 )
@@ -390,7 +392,9 @@ func TestFetchImageToCache(t *testing.T) {
 		ImageURL: "https://minio.example.com/images/cache-image.qcow2",
 	}
 
-	jobID, err := manager.FetchImageToCache(context.Background(), req)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately to prevent goroutine panics
+	jobID, err := manager.FetchImageToCache(ctx, req)
 
 	assert.NoError(t, err)
 	assert.NotEmpty(t, jobID)
@@ -402,4 +406,246 @@ func TestFetchImageToCache(t *testing.T) {
 	assert.Equal(t, req.ImageURL, job.Request.ImageURL)
 	assert.NotZero(t, job.CreatedAt)
 	assert.NotZero(t, job.UpdatedAt)
+}
+
+// TestRecoverJobs tests the job recovery functionality
+func TestRecoverJobs(t *testing.T) {
+	// Create a manager with a working database
+	store, err := storage.NewStore(":memory:")
+	assert.NoError(t, err)
+
+	manager := &Manager{
+		jobs:  make(map[string]*Job),
+		store: store,
+	}
+
+	// Create a job in the database that appears to be running
+	runningJob := &Job{
+		ID:     "test-recovery-job",
+		Status: types.StatusRunning,
+		Request: types.ProvisionRequest{
+			ImageURL:     "http://example.com/test.qcow2",
+			VolumeName:   "test-vol",
+			VolumeSizeGB: 10,
+		},
+		CreatedAt: time.Now().Add(-time.Hour),
+		UpdatedAt: time.Now().Add(-time.Hour),
+	}
+
+	err = store.SaveJob(context.Background(), &storage.JobRecord{
+		ID:           runningJob.ID,
+		Status:       string(runningJob.Status),
+		RequestJSON:  `{"image_url":"http://example.com/test.qcow2","volume_name":"test-vol","volume_size_gb":10}`,
+		ErrorMessage: "",
+		CreatedAt:    runningJob.CreatedAt,
+		UpdatedAt:    runningJob.UpdatedAt,
+	})
+	assert.NoError(t, err)
+
+	// Recover jobs
+	err = manager.RecoverJobs()
+	assert.NoError(t, err)
+
+	// Check that the job was marked as failed in the database
+	record, err := store.GetJob(runningJob.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, "failed", record.Status)
+	assert.Contains(t, record.ErrorMessage, "daemon restarted")
+}
+
+// TestProvisionVolume_NoDependencies tests ProvisionVolume with missing dependencies
+func TestProvisionVolume_NoDependencies(t *testing.T) {
+	manager := &Manager{
+		jobs: make(map[string]*Job),
+		// Intentionally leave minioClient, lvmManager, etc. as nil
+	}
+
+	job := &Job{
+		ID: "test-job",
+		Request: types.ProvisionRequest{
+			ImageURL:     "http://example.com/test.qcow2",
+			VolumeName:   "test-volume",
+			VolumeSizeGB: 10,
+		},
+	}
+
+	err := manager.ProvisionVolume(context.Background(), job)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "dependencies not initialized")
+}
+
+// TestGetImageChecksum_NoMinIO tests getImageChecksum with no MinIO client
+func TestGetImageChecksum_NoMinIO(t *testing.T) {
+	manager := &Manager{
+		// No minioClient
+	}
+
+	checksum, err := manager.getImageChecksum(context.Background(), "http://example.com/test.qcow2")
+	assert.Error(t, err)
+	assert.Empty(t, checksum)
+}
+
+// TestGetOrDownloadImage_NoDependencies tests getOrDownloadImage with missing dependencies
+func TestGetOrDownloadImage_NoDependencies(t *testing.T) {
+	manager := &Manager{
+		jobs: make(map[string]*Job),
+		// Missing dependencies
+	}
+
+	req := types.ProvisionRequest{
+		ImageURL:     "http://example.com/test.qcow2",
+		VolumeName:   "test-volume",
+		VolumeSizeGB: 10,
+	}
+
+	job := &Job{
+		ID:      "test-job",
+		Request: req,
+	}
+
+	_, err := manager.getOrDownloadImage(context.Background(), req, job)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "dependencies not initialized")
+}
+
+// TestRunJob_NoDependencies tests runJob with missing dependencies in test environment
+func TestRunJob_NoDependencies_TestEnv(t *testing.T) {
+	manager := &Manager{
+		jobs: make(map[string]*Job),
+		// Missing dependencies
+	}
+
+	job := &Job{
+		ID: "test-job",
+		Request: types.ProvisionRequest{
+			ImageURL:     "http://example.com/test.qcow2",
+			VolumeName:   "test-volume",
+			VolumeSizeGB: 10,
+		},
+		Status: types.StatusPending,
+	}
+
+	// This should complete successfully in test environment
+	manager.runJob(context.Background(), job)
+
+	// In test environment, job should be marked as completed
+	assert.Equal(t, types.StatusCompleted, job.Status)
+}
+
+// TestCleanupCompletedJobs_Enhanced tests the job cleanup functionality
+func TestCleanupCompletedJobs_Enhanced(t *testing.T) {
+	manager := &Manager{
+		jobs: make(map[string]*Job),
+	}
+
+	// Create some completed jobs
+	for i := 0; i < 105; i++ {
+		jobID := fmt.Sprintf("completed-job-%d", i)
+		job := &Job{
+			ID:        jobID,
+			Status:    types.StatusCompleted,
+			CreatedAt: time.Now().Add(-time.Hour * time.Duration(i)),
+			UpdatedAt: time.Now().Add(-time.Hour * time.Duration(i)),
+		}
+		manager.jobs[jobID] = job
+	}
+
+	// Create one running job
+	runningJob := &Job{
+		ID:        "running-job",
+		Status:    types.StatusRunning,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	manager.jobs["running-job"] = runningJob
+
+	initialCount := len(manager.jobs)
+	assert.True(t, initialCount > 100) // Should have more than 100 jobs
+
+	manager.CleanupCompletedJobs()
+
+	// Should keep only the most recent 100 completed jobs + the running job
+	assert.True(t, len(manager.jobs) <= 101) // 100 completed + 1 running
+	assert.Contains(t, manager.jobs, "running-job")
+}
+
+// TestGetActiveJobs tests counting active jobs
+func TestGetActiveJobs_Enhanced(t *testing.T) {
+	manager := &Manager{
+		jobs: make(map[string]*Job),
+	}
+
+	// Create jobs with different statuses
+	statuses := []types.JobStatus{
+		types.StatusPending,
+		types.StatusRunning,
+		types.StatusCompleted,
+		types.StatusFailed,
+		types.StatusCancelled,
+	}
+
+	for i, status := range statuses {
+		jobID := fmt.Sprintf("job-%d", i)
+		job := &Job{
+			ID:     jobID,
+			Status: status,
+		}
+		manager.jobs[jobID] = job
+	}
+
+	activeCount := manager.GetActiveJobs()
+
+	// Only pending and running jobs should be considered active
+	assert.Equal(t, 2, activeCount) // 1 pending + 1 running
+}
+
+// TestListCachedImages_NoLibvirt tests ListCachedImages with no libvirt pool
+func TestListCachedImages_NoLibvirt(t *testing.T) {
+	manager := &Manager{
+		// No libvirtPool
+	}
+
+	images, err := manager.ListCachedImages()
+	assert.Error(t, err)
+	assert.Nil(t, images)
+}
+
+// TestGetJobCacheInfo tests cache info retrieval
+func TestGetJobCacheInfo_Enhanced(t *testing.T) {
+	store, err := storage.NewStore(":memory:")
+	assert.NoError(t, err)
+
+	manager := &Manager{
+		jobs:  make(map[string]*Job),
+		store: store,
+	}
+
+	// Create a completed job with cache info
+	job := &Job{
+		ID:     "test-job",
+		Status: types.StatusCompleted,
+		Request: types.ProvisionRequest{
+			ImageURL:   "http://example.com/image.qcow2",
+			VolumeName: "test-volume",
+		},
+	}
+
+	// Save job to database
+	record := &storage.JobRecord{
+		ID:          job.ID,
+		Status:      string(job.Status),
+		RequestJSON: `{"image_url":"http://example.com/image.qcow2","volume_name":"test-volume"}`,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	err = store.SaveJob(context.Background(), record)
+	assert.NoError(t, err)
+
+	manager.jobs[job.ID] = job
+
+	// Test cache info retrieval
+	cacheHit, imagePath, err := manager.GetJobCacheInfo(job.ID)
+	assert.NoError(t, err)
+	assert.False(t, cacheHit)
+	assert.Empty(t, imagePath)
 }

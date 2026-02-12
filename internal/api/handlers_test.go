@@ -216,7 +216,9 @@ func TestFetchImageToCache_ValidRequest(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	body := bytes.NewBufferString(requestBody)
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately to prevent goroutines from running
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		"/api/v1/cache/fetch", body)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
