@@ -35,7 +35,7 @@ func (m *MockJobManager) GetJobStatus(jobID string) (*types.StatusResponse, erro
 	}, nil
 }
 
-func (m *MockJobManager) CancelJob(_ string) error {
+func (m *MockJobManager) CancelJob(_ context.Context, _ string) error {
 	return nil
 }
 
