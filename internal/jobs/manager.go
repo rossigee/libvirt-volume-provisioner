@@ -157,8 +157,8 @@ func (m *Manager) StartJob(ctx context.Context, req types.ProvisionRequest) (str
 	m.jobs[jobID] = job
 	m.mu.Unlock()
 
-	// Persist to database
-	m.syncToDatabase(jobCtx, job) //nolint:contextcheck
+	// Persist to database - use background context to avoid request context cancellation
+	m.syncToDatabase(context.Background(), job)
 
 	// Start job in background
 	go m.runJob(jobCtx, job) //nolint:contextcheck
@@ -225,6 +225,17 @@ func (m *Manager) CancelJob(jobID string) error {
 
 // runJob executes a provisioning job
 func (m *Manager) runJob(ctx context.Context, job *Job) {
+	// Debug: Check if context is already canceled
+	select {
+	case <-ctx.Done():
+		logrus.WithFields(logrus.Fields{
+			"job_id": job.ID,
+			"error":  ctx.Err(),
+		}).Error("runJob called with already canceled context")
+	default:
+		logrus.WithField("job_id", job.ID).Info("runJob started with valid context")
+	}
+
 	// Check if dependencies are available (for unit tests that don't initialize them)
 	if m.minioClient == nil || m.lvmManager == nil || m.libvirtPool == nil || m.store == nil {
 		// In test environments, just mark as completed without doing work
@@ -263,13 +274,30 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 		return
 	}
 
+	// Debug: Check context before setting running status
+	select {
+	case <-ctx.Done():
+		logrus.WithFields(logrus.Fields{
+			"job_id": job.ID,
+			"stage":  "before_running_sync",
+			"error":  ctx.Err(),
+		}).Error("Context canceled before running sync")
+		job.Status = types.StatusFailed
+		job.Error = fmt.Errorf("context canceled before running sync: %w", ctx.Err())
+		job.UpdatedAt = time.Now()
+		m.syncToDatabase(context.Background(), job)
+		return
+	default:
+		logrus.WithField("job_id", job.ID).Info("Context valid before running sync")
+	}
+
 	job.Status = types.StatusRunning
 	job.UpdatedAt = time.Now()
 	m.syncToDatabase(ctx, job)
 
 	defer func() {
 		job.UpdatedAt = time.Now()
-		m.syncToDatabase(ctx, job)
+		m.syncToDatabase(context.Background(), job)
 		switch job.Status {
 		case types.StatusPending, types.StatusRunning, types.StatusCancelled:
 			// No action needed for these statuses
@@ -321,7 +349,7 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 
 	// Step 2: Create LVM volume
 	job.Progress.Stage = "creating_volume"
-	job.Progress.Percent = 50
+	job.Progress.Percent = 45
 
 	if err := m.lvmManager.CreateVolume(ctx, req.VolumeName, req.VolumeSizeGB); err != nil {
 		provisionFailed = true
@@ -351,7 +379,7 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 
 	// Step 3: Convert and populate volume
 	job.Progress.Stage = "converting"
-	job.Progress.Percent = 75
+	job.Progress.Percent = 55
 
 	if err := m.lvmManager.PopulateVolume(ctx, imagePath, req.VolumeName, req.ImageType, job); err != nil {
 		provisionFailed = true
@@ -418,6 +446,18 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 	// Download image to cache path
 	job.Progress.Stage = "downloading"
 	job.Progress.Percent = 10
+
+	// Debug: Check context before download
+	select {
+	case <-ctx.Done():
+		logrus.WithFields(logrus.Fields{
+			"job_id": job.ID,
+			"error":  ctx.Err(),
+		}).Error("Context canceled before download")
+		return "", fmt.Errorf("context canceled before download: %w", ctx.Err())
+	default:
+		logrus.WithField("job_id", job.ID).Info("Starting download with valid context")
+	}
 
 	if err := m.minioClient.DownloadImageToPath(ctx, req.ImageURL, imagePath, job); err != nil {
 		// Cleanup failed download

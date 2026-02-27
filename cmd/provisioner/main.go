@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,10 +42,17 @@ var (
 )
 
 func initOTLP(ctx context.Context) (*sdktrace.TracerProvider, error) {
-	// Configure OTLP gRPC exporter
 	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if endpoint == "" {
-		return nil, errOTLPNotConfigured // OTLP not configured, skip
+		return nil, errOTLPNotConfigured
+	}
+
+	if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+		u, err := url.Parse(endpoint)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse OTLP endpoint: %w", err)
+		}
+		endpoint = u.Host
 	}
 
 	exporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithEndpoint(endpoint))
