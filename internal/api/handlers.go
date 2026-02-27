@@ -21,7 +21,7 @@ import (
 type JobManager interface {
 	StartJob(ctx context.Context, req types.ProvisionRequest) (string, error)
 	GetJobStatus(jobID string) (*types.StatusResponse, error)
-	CancelJob(jobID string) error
+	CancelJob(ctx context.Context, jobID string) error
 	GetActiveJobs() int
 	GetJobCacheInfo(jobID string) (cacheHit bool, imagePath string, err error)
 	ListCachedImages() ([]*libvirt.ImageCache, error)
@@ -198,7 +198,7 @@ func (h *Handler) CancelJob(c *gin.Context) {
 		return
 	}
 
-	err := h.jobManager.CancelJob(jobID)
+	err := h.jobManager.CancelJob(c.Request.Context(), jobID)
 	if err != nil {
 		if strings.HasPrefix(err.Error(), "job not found") {
 			c.JSON(http.StatusNotFound, types.ErrorResponse{
