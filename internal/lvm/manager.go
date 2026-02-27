@@ -261,7 +261,7 @@ func (m *Manager) populateVolumeOnce(imagePath, volumeName, imageType string, up
 
 	// Update progress
 	if updater != nil {
-		updater.UpdateProgress("converting", 90, 0, 0)
+		updater.UpdateProgress("converting", 95, 0, 0)
 	}
 
 	return nil
