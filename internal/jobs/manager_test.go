@@ -342,7 +342,7 @@ func TestCancelJob(t *testing.T) {
 
 	manager.jobs["test-job"] = job
 
-	err := manager.CancelJob("test-job")
+	err := manager.CancelJob(context.Background(), "test-job")
 
 	assert.NoError(t, err)
 	assert.True(t, cancelled)
@@ -355,7 +355,7 @@ func TestCancelJob_NotFound(t *testing.T) {
 		semaphore: make(chan struct{}, 2),
 	}
 
-	err := manager.CancelJob("nonexistent-job")
+	err := manager.CancelJob(context.Background(), "nonexistent-job")
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
@@ -375,7 +375,7 @@ func TestCancelJob_AlreadyCompleted(t *testing.T) {
 
 	manager.jobs["test-job"] = job
 
-	err := manager.CancelJob("test-job")
+	err := manager.CancelJob(context.Background(), "test-job")
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot be cancelled")

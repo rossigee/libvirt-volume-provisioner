@@ -158,7 +158,7 @@ func (m *Manager) StartJob(ctx context.Context, req types.ProvisionRequest) (str
 	m.mu.Unlock()
 
 	// Persist to database - use background context to avoid request context cancellation
-	m.syncToDatabase(context.Background(), job)
+	m.syncToDatabase(context.Background(), job) //nolint:contextcheck
 
 	// Start job in background
 	go m.runJob(jobCtx, job) //nolint:contextcheck
@@ -199,7 +199,7 @@ func (m *Manager) GetJobStatus(jobID string) (*types.StatusResponse, error) {
 }
 
 // CancelJob cancels a running job
-func (m *Manager) CancelJob(jobID string) error {
+func (m *Manager) CancelJob(ctx context.Context, jobID string) error {
 	m.mu.Lock()
 	job, exists := m.jobs[jobID]
 	if !exists {
@@ -218,7 +218,7 @@ func (m *Manager) CancelJob(jobID string) error {
 	m.mu.Unlock()
 
 	// Persist cancellation to database
-	m.syncToDatabase(context.Background(), job)
+	m.syncToDatabase(ctx, job)
 
 	return nil
 }
@@ -285,7 +285,7 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 		job.Status = types.StatusFailed
 		job.Error = fmt.Errorf("context canceled before running sync: %w", ctx.Err())
 		job.UpdatedAt = time.Now()
-		m.syncToDatabase(context.Background(), job)
+		m.syncToDatabase(ctx, job)
 		return
 	default:
 		logrus.WithField("job_id", job.ID).Info("Context valid before running sync")
@@ -297,7 +297,7 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 
 	defer func() {
 		job.UpdatedAt = time.Now()
-		m.syncToDatabase(context.Background(), job)
+		m.syncToDatabase(ctx, job)
 		switch job.Status {
 		case types.StatusPending, types.StatusRunning, types.StatusCancelled:
 			// No action needed for these statuses
