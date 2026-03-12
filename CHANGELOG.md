@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-03-12
+
+### Added
+- **Enterprise Observability Stack**: Comprehensive monitoring and debugging capabilities
+  - **Enhanced Logging System**: Configurable JSON/text logging with sampling, external aggregation (webhook/Loki), and structured error logging
+  - **Advanced Metrics Collection**: 20+ Prometheus metrics covering cache ratios, job lifecycle, image operations, and health status
+  - **Multi-Exporter Tracing**: OpenTelemetry support with OTLP, Jaeger, and Zipkin exporters, configurable sampling, and distributed context propagation
+- **Request Logging Middleware**: HTTP request/response logging with correlation IDs and performance metrics
+- **External Log Hooks**: Configurable webhook and Loki integration for centralized logging
+- **Health Status Monitoring**: Comprehensive dependency and system health tracking
+- **Performance Optimization**: Log sampling and configurable tracing to minimize overhead
+
+### Changed
+- **Dependencies**: Updated Gin (v1.12.0), OpenTelemetry (v1.42.0), MinIO (v7.0.99), golangci-lint (v2.11.3)
+- **CI/CD**: Streamlined workflow configuration, removed problematic build-release workflows
+- **Code Quality**: Enhanced error handling, resource management, and type safety
+
+### Fixed
+- **GitHub Actions Workflows**: Resolved CI failures by removing incompatible workflow configurations
+- **Resource Management**: Improved HTTP client usage and response body handling
+- **Type Safety**: Enhanced error checking and nil pointer protection
+
 ## [0.5.3] - 2026-03-12
 
 ### Added
