@@ -137,7 +137,18 @@ func (m *Manager) RecoverJobs() error {
 
 // StartJob starts a new volume provisioning job.
 func (m *Manager) StartJob(ctx context.Context, req types.ProvisionRequest) (string, error) {
+	tracer := otel.Tracer("job-manager")
+	_, span := tracer.Start(ctx, "StartJob",
+		trace.WithAttributes(
+			attribute.String("job.correlation_id", req.CorrelationID),
+			attribute.String("job.image_url", req.ImageURL),
+			attribute.Int("job.volume_size_gb", req.VolumeSizeGB),
+			attribute.String("job.volume_name", req.VolumeName),
+		))
+	defer span.End()
+
 	jobID := uuid.New().String()
+	span.SetAttributes(attribute.String("job.id", jobID))
 
 	// Create detached context with timeout - don't use request context as parent
 	// because it will be canceled when the HTTP request completes
@@ -164,6 +175,7 @@ func (m *Manager) StartJob(ctx context.Context, req types.ProvisionRequest) (str
 	// Start job in background
 	go m.runJob(jobCtx, job) //nolint:contextcheck
 
+	span.SetStatus(codes.Ok, "job started successfully")
 	return jobID, nil
 }
 
@@ -322,6 +334,8 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 
 // ProvisionVolume performs the actual volume provisioning
 func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
+	tracer := otel.Tracer("job-manager")
+
 	// Check if dependencies are available (for unit tests that don't initialize them)
 	if m.minioClient == nil || m.lvmManager == nil || m.libvirtPool == nil || m.store == nil {
 		return fmt.Errorf("job manager dependencies not initialized")
@@ -343,20 +357,43 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	job.Progress.Stage = "checking_cache"
 	job.Progress.Percent = 5
 
-	imagePath, err := m.getOrDownloadImage(ctx, req, job)
+	// Create span for image acquisition
+	imageCtx, imageSpan := tracer.Start(ctx, "getOrDownloadImage",
+		trace.WithAttributes(
+			attribute.String("image.url", req.ImageURL),
+			attribute.String("image.type", req.ImageType),
+		))
+	defer imageSpan.End()
+
+	imagePath, err := m.getOrDownloadImage(imageCtx, req, job)
 	if err != nil {
+		imageSpan.RecordError(err)
+		imageSpan.SetStatus(codes.Error, "failed to acquire image")
 		return fmt.Errorf("failed to get image: %w", err)
 	}
+	imageSpan.SetAttributes(attribute.String("image.path", imagePath))
+	imageSpan.SetStatus(codes.Ok, "image acquired successfully")
 
 	// Step 2: Create LVM volume
 	job.Progress.Stage = "creating_volume"
 	job.Progress.Percent = 45
 
-	if err := m.lvmManager.CreateVolume(ctx, req.VolumeName, req.VolumeSizeGB); err != nil {
+	// Create span for volume creation
+	volumeCtx, volumeSpan := tracer.Start(ctx, "createVolume",
+		trace.WithAttributes(
+			attribute.String("volume.name", req.VolumeName),
+			attribute.Int("volume.size_gb", req.VolumeSizeGB),
+		))
+	defer volumeSpan.End()
+
+	if err := m.lvmManager.CreateVolume(volumeCtx, req.VolumeName, req.VolumeSizeGB); err != nil {
+		volumeSpan.RecordError(err)
+		volumeSpan.SetStatus(codes.Error, "failed to create volume")
 		provisionFailed = true
 		return fmt.Errorf("failed to create volume: %w", err)
 	}
 	volumeCreated = true
+	volumeSpan.SetStatus(codes.Ok, "volume created successfully")
 
 	// Rollback defer: Delete volume if provisioning fails after creation
 	defer func() {
@@ -382,10 +419,22 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	job.Progress.Stage = "converting"
 	job.Progress.Percent = 55
 
-	if err := m.lvmManager.PopulateVolume(ctx, imagePath, req.VolumeName, req.ImageType, job); err != nil {
+	// Create span for volume population
+	populateCtx, populateSpan := tracer.Start(ctx, "populateVolume",
+		trace.WithAttributes(
+			attribute.String("volume.name", req.VolumeName),
+			attribute.String("image.path", imagePath),
+			attribute.String("image.type", req.ImageType),
+		))
+	defer populateSpan.End()
+
+	if err := m.lvmManager.PopulateVolume(populateCtx, imagePath, req.VolumeName, req.ImageType, job); err != nil {
+		populateSpan.RecordError(err)
+		populateSpan.SetStatus(codes.Error, "failed to populate volume")
 		provisionFailed = true
 		return fmt.Errorf("failed to populate volume: %w", err)
 	}
+	populateSpan.SetStatus(codes.Ok, "volume populated successfully")
 
 	// Step 4: Finalize
 	job.Progress.Stage = "finalizing"
@@ -396,25 +445,47 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 
 // getOrDownloadImage checks cache or downloads image and returns the path
 func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionRequest, job *Job) (string, error) {
+	tracer := otel.Tracer("job-manager")
+
 	// Check if dependencies are available (for unit tests that don't initialize them)
 	if m.minioClient == nil || m.lvmManager == nil || m.libvirtPool == nil || m.store == nil {
 		return "", fmt.Errorf("job manager dependencies not initialized")
 	}
 
 	// Get checksum from MinIO .sha256 file
-	checksum, err := m.getImageChecksum(ctx, req.ImageURL)
+	checksumCtx, checksumSpan := tracer.Start(ctx, "getImageChecksum",
+		trace.WithAttributes(attribute.String("image.url", req.ImageURL)))
+	checksum, err := m.getImageChecksum(checksumCtx, req.ImageURL)
 	if err != nil {
+		checksumSpan.RecordError(err)
+		checksumSpan.SetStatus(codes.Error, "failed to get checksum")
 		logrus.WithError(err).Warn("Failed to get image checksum from MinIO, using URL as cache key")
 		checksum = req.ImageURL // Fallback to URL
+	} else {
+		checksumSpan.SetAttributes(attribute.String("image.checksum", checksum))
+		checksumSpan.SetStatus(codes.Ok, "checksum retrieved")
 	}
+	checksumSpan.End()
 
 	// Check if image is cached using checksum as key
+	_, cacheSpan := tracer.Start(ctx, "checkImageCache",
+		trace.WithAttributes(
+			attribute.String("image.checksum", checksum),
+			attribute.String("image.url", req.ImageURL),
+		))
 	cachedImage, err := m.libvirtPool.CheckCache(checksum)
 	if err != nil {
+		cacheSpan.RecordError(err)
 		logrus.WithError(err).Warn("Failed to check image cache, proceeding with download")
 	}
 
 	if cachedImage != nil {
+		cacheSpan.SetAttributes(
+			attribute.String("cache.result", "hit"),
+			attribute.String("cache.path", cachedImage.Path),
+			attribute.Int64("cache.size", int64(cachedImage.Size)),
+		)
+		cacheSpan.SetStatus(codes.Ok, "cache hit")
 		logrus.WithFields(logrus.Fields{
 			"job_id":      job.ID,
 			"image_url":   req.ImageURL,
@@ -424,8 +495,13 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 		}).Info("Using cached image")
 		job.CacheHit = true
 		job.ImagePath = cachedImage.Path
+		cacheSpan.End()
 		return cachedImage.Path, nil
 	}
+
+	cacheSpan.SetAttributes(attribute.String("cache.result", "miss"))
+	cacheSpan.SetStatus(codes.Ok, "cache miss")
+	cacheSpan.End()
 
 	// Image not cached, need to download
 	logrus.WithFields(logrus.Fields{
@@ -436,10 +512,18 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 
 	// Allocate file path in cache directory using checksum as key.
 	// This preserves compression for QCOW2 images by storing them as plain files.
+	_, allocSpan := tracer.Start(ctx, "allocateImageFile",
+		trace.WithAttributes(attribute.String("image.checksum", checksum)))
 	imagePath, err := m.libvirtPool.AllocateImageFile(checksum)
 	if err != nil {
+		allocSpan.RecordError(err)
+		allocSpan.SetStatus(codes.Error, "failed to allocate cache file")
+		allocSpan.End()
 		return "", fmt.Errorf("failed to allocate cache file: %w", err)
 	}
+	allocSpan.SetAttributes(attribute.String("image.path", imagePath))
+	allocSpan.SetStatus(codes.Ok, "cache file allocated")
+	allocSpan.End()
 
 	// Download image to cache path
 	job.Progress.Stage = "downloading"

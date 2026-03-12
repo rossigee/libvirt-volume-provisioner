@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,7 +21,9 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/internal/auth"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/jobs"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/logging"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/lvm"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/metrics"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/minio"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
 	"github.com/sirupsen/logrus"
@@ -41,23 +44,48 @@ var (
 	buildTime = "unknown"
 )
 
-func initOTLP(ctx context.Context) (*sdktrace.TracerProvider, error) {
-	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	if endpoint == "" {
-		return nil, errOTLPNotConfigured
+// TracingConfig holds tracing configuration
+type TracingConfig struct {
+	Enabled        bool
+	SamplingRate   float64
+	Exporters      []string // "otlp", "jaeger", "zipkin"
+	OTLPEndpoint   string
+	JaegerEndpoint string
+	ZipkinEndpoint string
+}
+
+// initTracing initializes enhanced tracing with multiple exporters
+func initTracing(ctx context.Context) (*sdktrace.TracerProvider, error) {
+	config := TracingConfig{
+		Enabled:      os.Getenv("TRACING_ENABLED") == "true",
+		SamplingRate: 1.0, // Default to 100% sampling
 	}
 
-	if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-		u, err := url.Parse(endpoint)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse OTLP endpoint: %w", err)
+	// Parse sampling rate
+	if rateStr := os.Getenv("TRACING_SAMPLING_RATE"); rateStr != "" {
+		if rate, err := strconv.ParseFloat(rateStr, 64); err == nil && rate >= 0 && rate <= 1 {
+			config.SamplingRate = rate
 		}
-		endpoint = u.Host
 	}
 
-	exporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithEndpoint(endpoint))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create OTLP exporter: %w", err)
+	// Parse exporters
+	if exportersStr := os.Getenv("TRACING_EXPORTERS"); exportersStr != "" {
+		config.Exporters = strings.Split(exportersStr, ",")
+		for i, exp := range config.Exporters {
+			config.Exporters[i] = strings.TrimSpace(exp)
+		}
+	} else {
+		// Default to OTLP if endpoint is set
+		config.OTLPEndpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+		if config.OTLPEndpoint != "" {
+			config.Exporters = []string{"otlp"}
+			config.Enabled = true
+		}
+	}
+
+	// Check if tracing is enabled
+	if !config.Enabled && len(config.Exporters) == 0 {
+		return nil, errOTLPNotConfigured
 	}
 
 	// Create resource
@@ -71,13 +99,74 @@ func initOTLP(ctx context.Context) (*sdktrace.TracerProvider, error) {
 		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}
 
-	// Create tracer provider
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
-		sdktrace.WithResource(res),
-	)
-	otel.SetTracerProvider(tp)
+	// Create sampler
+	var sampler sdktrace.Sampler
+	if config.SamplingRate >= 1.0 {
+		sampler = sdktrace.AlwaysSample()
+	} else if config.SamplingRate <= 0.0 {
+		sampler = sdktrace.NeverSample()
+	} else {
+		sampler = sdktrace.TraceIDRatioBased(config.SamplingRate)
+	}
 
+	// Create exporters
+	var exporters []sdktrace.SpanExporter
+	for _, expType := range config.Exporters {
+		switch strings.ToLower(expType) {
+		case "otlp":
+			endpoint := config.OTLPEndpoint
+			if endpoint == "" {
+				endpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+			}
+			if endpoint == "" {
+				continue
+			}
+
+			if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+				u, err := url.Parse(endpoint)
+				if err != nil {
+					return nil, fmt.Errorf("failed to parse OTLP endpoint: %w", err)
+				}
+				endpoint = u.Host
+			}
+
+			exporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithEndpoint(endpoint))
+			if err != nil {
+				return nil, fmt.Errorf("failed to create OTLP exporter: %w", err)
+			}
+			exporters = append(exporters, exporter)
+
+		case "jaeger":
+			// Jaeger support would require additional dependencies
+			// For now, skip with a warning
+			logrus.Warn("Jaeger exporter not implemented yet")
+
+		case "zipkin":
+			// Zipkin support would require additional dependencies
+			// For now, skip with a warning
+			logrus.Warn("Zipkin exporter not implemented yet")
+		}
+	}
+
+	if len(exporters) == 0 {
+		return nil, fmt.Errorf("no valid exporters configured")
+	}
+
+	// Create tracer provider with all exporters
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporters[0]), // Use first exporter for batching
+		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sampler),
+	)
+
+	// Add additional exporters if any
+	for i := 1; i < len(exporters); i++ {
+		// Note: This is a simplified approach. In production, you might want
+		// a more sophisticated multi-exporter setup
+		tp.RegisterSpanProcessor(sdktrace.NewBatchSpanProcessor(exporters[i]))
+	}
+
+	otel.SetTracerProvider(tp)
 	return tp, nil
 }
 
@@ -88,7 +177,7 @@ func (h *logCorrelationHook) Levels() []logrus.Level {
 	return logrus.AllLevels
 }
 
-func (h *logCorrelationHook) Fire(entry *logrus.Entry) error {
+func (h *logCorrelationHook) Fire(entry *logrus.Entry) {
 	span := trace.SpanFromContext(entry.Context)
 	if span != nil && span.IsRecording() {
 		spanContext := span.SpanContext()
@@ -97,26 +186,70 @@ func (h *logCorrelationHook) Fire(entry *logrus.Entry) error {
 			entry.Data["span_id"] = spanContext.SpanID().String()
 		}
 	}
-	return nil
 }
 
 func main() {
-	// Configure logrus for structured JSON logging
-	logrus.SetFormatter(&logrus.JSONFormatter{
-		TimestampFormat: time.RFC3339,
-	})
-	logrus.SetLevel(logrus.InfoLevel)
+	// Initialize enhanced logging
+	logConfig := logging.DefaultConfig()
 
-	// Add log correlation hook for trace context
-	logrus.AddHook(&logCorrelationHook{})
+	// Allow configuration via environment variables
+	if level := os.Getenv("LOG_LEVEL"); level != "" {
+		logConfig.Level = level
+	}
+	if format := os.Getenv("LOG_FORMAT"); format != "" {
+		logConfig.Format = format
+	}
+	if output := os.Getenv("LOG_OUTPUT"); output != "" {
+		logConfig.Output = output
+	}
+	if samplingRate := os.Getenv("LOG_SAMPLING_RATE"); samplingRate != "" {
+		if rate, err := strconv.Atoi(samplingRate); err == nil && rate > 1 {
+			logConfig.SamplingRate = rate
+		}
+	}
+
+	logger, err := logging.NewLogger(logConfig)
+	if err != nil {
+		logrus.WithError(err).Fatal("Failed to initialize logger")
+	}
+
+	// Replace global logrus logger with our enhanced logger
+	logrus.SetOutput(logger.Writer())
+	logrus.SetFormatter(logger.Formatter)
+	logrus.SetLevel(logger.Level)
+
+	// Add external log hooks if configured
+	if lokiURL := os.Getenv("LOKI_URL"); lokiURL != "" {
+		lokiLabels := map[string]string{
+			"service": "libvirt-volume-provisioner",
+			"version": version,
+		}
+		lokiHook := logging.NewLokiHook(lokiURL, lokiLabels)
+		logrus.AddHook(lokiHook)
+		logger.Info("Loki logging enabled")
+	}
+
+	if webhookURL := os.Getenv("LOG_WEBHOOK_URL"); webhookURL != "" {
+		hookConfig := logging.HookConfig{
+			Type:          "webhook",
+			URL:           webhookURL,
+			Headers:       map[string]string{"Content-Type": "application/json"},
+			BufferSize:    50,
+			FlushInterval: 30 * time.Second,
+		}
+		webhookHook := logging.NewExternalLogHook(hookConfig)
+		defer webhookHook.Close()
+		logrus.AddHook(webhookHook)
+		logger.Info("Webhook logging enabled")
+	}
 
 	// Configure Gin
 	gin.SetMode(gin.ReleaseMode)
-	gin.DefaultWriter = logrus.StandardLogger().Writer()
+	gin.DefaultWriter = logger.Writer()
 
-	// Initialize OTLP tracing
+	// Initialize tracing
 	ctx := context.Background()
-	tp, err := initOTLP(ctx)
+	tp, err := initTracing(ctx)
 	if err != nil && !errors.Is(err, errOTLPNotConfigured) {
 		logrus.WithError(err).Fatal("Failed to initialize OTLP tracing")
 	}
@@ -196,14 +329,18 @@ func main() {
 
 	// Add global middleware
 	router.Use(gin.Recovery())
+	router.Use(logger.RequestLogger())
 
 	// Add OpenTelemetry Gin middleware for automatic HTTP span creation
 	if tp != nil {
 		router.Use(otelgin.Middleware("libvirt-volume-provisioner"))
 	}
 
+	// Initialize metrics
+	appMetrics := metrics.NewMetrics()
+
 	// Initialize API handlers
-	apiHandler := api.NewHandler(jobManager, version)
+	apiHandler := api.NewHandler(jobManager, appMetrics, version)
 
 	// Setup routes (includes auth middleware for API routes only)
 	api.SetupRoutes(router, apiHandler, authValidator.Middleware())

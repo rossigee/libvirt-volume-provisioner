@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/metrics"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 )
 
@@ -31,6 +32,7 @@ type JobManager interface {
 // Handler handles HTTP API requests
 type Handler struct {
 	jobManager JobManager
+	metrics    *metrics.Metrics
 	version    string
 }
 
@@ -68,28 +70,39 @@ func init() {
 }
 
 // NewHandler creates a new API handler
-func NewHandler(jobManager JobManager, version string) *Handler {
+func NewHandler(jobManager JobManager, metrics *metrics.Metrics, version string) *Handler {
 	return &Handler{
 		jobManager: jobManager,
+		metrics:    metrics,
 		version:    version,
 	}
 }
 
 // metricsMiddleware tracks request metrics
-func metricsMiddleware() gin.HandlerFunc {
+func metricsMiddleware(m *metrics.Metrics) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		start := time.Now()
 		c.Next()
 
 		// Track request metrics
+		duration := time.Since(start).Seconds()
 		status := c.Writer.Status()
+
+		// Legacy metrics for backward compatibility
 		requestsTotal.WithLabelValues(c.Request.Method, c.FullPath(), fmt.Sprintf("%d", status)).Inc()
+
+		// New enhanced metrics (only if metrics is provided)
+		if m != nil {
+			m.RequestsTotal.WithLabelValues(c.Request.Method, c.FullPath(), fmt.Sprintf("%d", status)).Inc()
+			m.RequestDuration.WithLabelValues(c.Request.Method, c.FullPath()).Observe(duration)
+		}
 	}
 }
 
 // SetupRoutes configures the API routes
 func SetupRoutes(router *gin.Engine, handler *Handler, authMiddleware gin.HandlerFunc) {
 	// Add metrics middleware to all routes
-	router.Use(metricsMiddleware())
+	router.Use(metricsMiddleware(handler.metrics))
 
 	// Public endpoints (no auth required)
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
@@ -142,7 +155,10 @@ func (h *Handler) ProvisionVolume(c *gin.Context) {
 	// Start provisioning job
 	jobID, err := h.jobManager.StartJob(c.Request.Context(), req)
 	if err != nil {
-		jobsTotal.WithLabelValues("failed").Inc()
+		if h.metrics != nil {
+			h.metrics.JobsTotal.WithLabelValues("failed").Inc()
+		}
+		jobsTotal.WithLabelValues("failed").Inc() // Legacy compatibility
 		c.JSON(http.StatusInternalServerError, types.ErrorResponse{
 			Error:   "failed to start provisioning",
 			Message: err.Error(),
@@ -152,7 +168,11 @@ func (h *Handler) ProvisionVolume(c *gin.Context) {
 	}
 
 	// Update metrics
-	jobsTotal.WithLabelValues("started").Inc()
+	if h.metrics != nil {
+		h.metrics.RecordJobStart()
+		h.metrics.JobsTotal.WithLabelValues("started").Inc()
+	}
+	jobsTotal.WithLabelValues("started").Inc() // Legacy compatibility
 
 	response := types.ProvisionResponse{
 		JobID: jobID,
