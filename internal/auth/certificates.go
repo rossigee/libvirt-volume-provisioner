@@ -48,6 +48,7 @@ func (v *Validator) loadClientCAs() error {
 		caCertPath = "/etc/ssl/certs/ca-certificates.crt"
 	}
 
+	// #nosec G703 // Path is controlled by admin via environment variable
 	if _, err := os.Stat(caCertPath); os.IsNotExist(err) {
 		// For development, allow unauthenticated access
 		v.clientCALoaded = false
@@ -76,6 +77,7 @@ func (v *Validator) loadAPITokens() error {
 		tokenFile = "/etc/libvirt-volume-provisioner/tokens"
 	}
 
+	// #nosec G703 // Default configuration file path, not user-controlled
 	if _, err := os.Stat(tokenFile); os.IsNotExist(err) {
 		// For development, add a default token
 		v.apiTokens["dev-token-12345"] = true

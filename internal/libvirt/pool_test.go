@@ -191,6 +191,31 @@ func TestCheckCacheCreatesMissingDirectory(t *testing.T) {
 	assert.True(t, info.IsDir())
 }
 
+func TestCacheKeyConsistency(t *testing.T) {
+	tmpDir := t.TempDir()
+	pm := &PoolManager{
+		poolPath: tmpDir,
+	}
+
+	checksum := "a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
+
+	imagePath, err := pm.AllocateImageFile(checksum)
+	assert.NoError(t, err)
+	assert.Equal(t, filepath.Join(tmpDir, checksum), imagePath)
+
+	err = os.WriteFile(imagePath, []byte("fake image data"), 0600)
+	assert.NoError(t, err)
+
+	err = pm.CreateCacheEntry(imagePath, checksum)
+	assert.NoError(t, err)
+
+	cache, err := pm.CheckCache(checksum)
+	assert.NoError(t, err)
+	assert.NotNil(t, cache, "Cache should find the image using the same checksum key")
+	assert.Equal(t, imagePath, cache.Path)
+	assert.Equal(t, checksum, cache.Checksum)
+}
+
 func TestCreateCacheEntry(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := &PoolManager{

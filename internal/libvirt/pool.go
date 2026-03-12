@@ -319,7 +319,8 @@ func (pm *PoolManager) ListCachedImages() ([]*ImageCache, error) {
 		}
 
 		cache := &ImageCache{
-			Path:     imagePath,
+			Path: imagePath,
+			// #nosec G115 // size is checked to be non-negative above
 			Size:     uint64(size),
 			Checksum: cacheKey,
 		}

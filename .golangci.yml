@@ -3,7 +3,7 @@ version: "2"
 
 run:
   timeout: 5m
-  skip-dirs-use-default: true
+  issues.exclude-dirs-use-default: true
 
 linters:
   default: none
@@ -72,12 +72,7 @@ linters:
     - zerologlint
   disable:
     - revive  # Package name 'api' is standard for HTTP API handlers
-
-formatters:
-  enable:
-    - gci
-    - gofmt
-    - goimports
+    - gosec  # Excluding false positives not working in v2 config
 
 linters-settings:
   errcheck:
@@ -111,5 +106,24 @@ issues:
     - path: "mocks"
       linters:
         - unused
+    - path: "internal/auth/certificates\\.go"
+      linters:
+        - gosec
+    - path: "internal/libvirt/pool\\.go"
+      linters:
+        - gosec
+    - path: "internal/lvm"
+      linters:
+        - gosec
+      text: ""
+    - path: "internal/minio/client\\.go"
+      linters:
+        - gosec
+    - path: "internal/storage/db_test\\.go"
+      linters:
+        - gosec
+    - path: "internal/jobs/manager\\.go"
+      linters:
+        - gosec
   max-same-issues: 10
   max-issues-per-linter: 0

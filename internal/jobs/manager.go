@@ -141,6 +141,7 @@ func (m *Manager) StartJob(ctx context.Context, req types.ProvisionRequest) (str
 
 	// Create detached context with timeout - don't use request context as parent
 	// because it will be canceled when the HTTP request completes
+	// #nosec G118 // cancel is stored in job.cancelFunc for later use
 	jobCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // 30 minute timeout
 
 	job := &Job{
@@ -433,12 +434,9 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 		"cache_hit": false,
 	}).Info("Image not cached, downloading")
 
-	// Generate image name from URL
-	imageName := libvirt.GetImageNameFromURL(req.ImageURL)
-
-	// Allocate file path in cache directory (no libvirt volume allocation).
+	// Allocate file path in cache directory using checksum as key.
 	// This preserves compression for QCOW2 images by storing them as plain files.
-	imagePath, err := m.libvirtPool.AllocateImageFile(imageName)
+	imagePath, err := m.libvirtPool.AllocateImageFile(checksum)
 	if err != nil {
 		return "", fmt.Errorf("failed to allocate cache file: %w", err)
 	}
@@ -615,6 +613,7 @@ func (m *Manager) runCacheJob(ctx context.Context, job *Job) {
 		))
 	defer span.End()
 
+	// #nosec G118 // cancel is stored in job.cancelFunc for later use
 	jobCtx, cancel := context.WithCancel(ctx)
 	job.cancelFunc = cancel
 
