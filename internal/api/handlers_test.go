@@ -57,7 +57,7 @@ func (m *MockJobManager) FetchImageToCache(ctx context.Context, req types.FetchI
 
 func TestNewHandler(t *testing.T) {
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version")
 
 	assert.NotNil(t, handler)
 	assert.Equal(t, mockManager, handler.jobManager)
@@ -65,9 +65,11 @@ func TestNewHandler(t *testing.T) {
 }
 
 func TestSetupRoutes(t *testing.T) {
-	router := gin.New()
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version")
+
+	// Create test router
+	router := gin.New()
 
 	// Mock auth middleware
 	authMiddleware := func(c *gin.Context) {
@@ -98,9 +100,11 @@ func TestSetupRoutes(t *testing.T) {
 }
 
 func TestHealthCheck(t *testing.T) {
-	router := gin.New()
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version")
+
+	// Create test router
+	router := gin.New()
 
 	// Mock auth middleware
 	authMiddleware := func(c *gin.Context) {
@@ -119,9 +123,11 @@ func TestHealthCheck(t *testing.T) {
 }
 
 func TestProvisionVolume_InvalidJSON(t *testing.T) {
-	router := gin.New()
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version")
+
+	// Create test router
+	router := gin.New()
 
 	// Mock auth middleware
 	authMiddleware := func(c *gin.Context) {
@@ -142,9 +148,11 @@ func TestProvisionVolume_InvalidJSON(t *testing.T) {
 }
 
 func TestProvisionVolume_MissingFields(t *testing.T) {
-	router := gin.New()
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version")
+
+	// Create test router
+	router := gin.New()
 
 	// Mock auth middleware
 	authMiddleware := func(c *gin.Context) {
@@ -166,9 +174,11 @@ func TestProvisionVolume_MissingFields(t *testing.T) {
 }
 
 func TestProvisionVolume_ValidRequest(t *testing.T) {
-	router := gin.New()
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version")
+
+	// Create test router
+	router := gin.New()
 
 	// Mock auth middleware
 	authMiddleware := func(c *gin.Context) {
@@ -199,9 +209,11 @@ func TestProvisionVolume_ValidRequest(t *testing.T) {
 }
 
 func TestFetchImageToCache_ValidRequest(t *testing.T) {
-	router := gin.New()
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version")
+
+	// Create test router
+	router := gin.New()
 
 	// Mock auth middleware
 	authMiddleware := func(c *gin.Context) {

@@ -7,11 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.3] - 2026-03-12
 
+### Added
+- **Enhanced Logging System**: New configurable logging with JSON/text formats, log sampling, external aggregation support (webhook, Loki), and structured error logging
+- **Comprehensive Metrics**: Added cache hit/miss ratios, job execution metrics, image download statistics, storage operation metrics, and health status indicators
+- **Multi-Exporter Tracing**: Support for OTLP, Jaeger, and Zipkin exporters with configurable sampling rates and enhanced span coverage
+- **Request Logging Middleware**: HTTP request/response logging with correlation IDs and performance metrics
+- **External Log Hooks**: Configurable webhook and Loki integration for centralized logging
+
 ### Fixed
 - **Image Cache**: Fixed cache key mismatch that caused images to be redownloaded on every provision request. The `getOrDownloadImage` function now consistently uses the SHA256 checksum as the cache key for both cache lookup and storage.
+- **GitHub Actions Workflow**: Fixed YAML indentation issues in build-release.yml that prevented proper CI/CD execution
 
 ### Changed
-- **golangci-lint**: Updated to v2.11.3
+- **Dependencies**: Updated Gin (v1.11.0→v1.12.0), OpenTelemetry (v1.40.0→v1.42.0), MinIO (v7.0.98→v7.0.99), and other security patches
+- **golangci-lint**: Updated to v2.11.3 with enhanced rules
+- **API Handler**: Refactored to support enhanced metrics collection
 
 ## [0.5.2] - 2026-02-27
 

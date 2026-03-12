@@ -9,10 +9,16 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestInitOTLP_NoEndpoint(t *testing.T) {
-	// Test when OTEL_EXPORTER_OTLP_ENDPOINT is not set
+func TestInitTracing_NoEndpoint(t *testing.T) {
+	// Test when tracing is not configured
+	originalEnabled := os.Getenv("TRACING_ENABLED")
 	originalEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	defer func() {
+		if originalEnabled != "" {
+			_ = os.Setenv("TRACING_ENABLED", originalEnabled)
+		} else {
+			_ = os.Unsetenv("TRACING_ENABLED")
+		}
 		if originalEndpoint != "" {
 			_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint)
 		} else {
@@ -20,19 +26,26 @@ func TestInitOTLP_NoEndpoint(t *testing.T) {
 		}
 	}()
 
-	// Ensure endpoint is not set
+	// Ensure tracing is not enabled
+	_ = os.Unsetenv("TRACING_ENABLED")
 	_ = os.Unsetenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 
-	tp, err := initOTLP(context.Background())
+	tp, err := initTracing(context.Background())
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, errOTLPNotConfigured)
 	assert.Nil(t, tp)
 }
 
-func TestInitOTLP_InvalidEndpoint(t *testing.T) {
-	// Test with invalid endpoint
+func TestInitTracing_InvalidConfig(t *testing.T) {
+	// Test with invalid configuration
+	originalEnabled := os.Getenv("TRACING_ENABLED")
 	originalEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	defer func() {
+		if originalEnabled != "" {
+			_ = os.Setenv("TRACING_ENABLED", originalEnabled)
+		} else {
+			_ = os.Unsetenv("TRACING_ENABLED")
+		}
 		if originalEndpoint != "" {
 			_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint)
 		} else {
@@ -40,18 +53,14 @@ func TestInitOTLP_InvalidEndpoint(t *testing.T) {
 		}
 	}()
 
-	// Set invalid endpoint (missing protocol)
-	_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "invalid-endpoint")
+	// Set invalid configuration
+	_ = os.Setenv("TRACING_ENABLED", "true")
+	_ = os.Setenv("TRACING_EXPORTERS", "invalid-exporter")
 
-	tp, err := initOTLP(context.Background())
-	// The OTLP exporter might not fail immediately on creation
-	// but it should fail when trying to export spans
-	// For this test, we just check that it's not configured properly
-	if err == nil {
-		// If no error, at least check that it's not the expected configured state
-		// The main thing is that OTLP is not properly configured
-		assert.NotNil(t, tp) // It might create a tracer provider even with invalid endpoint
-	}
+	tp, err := initTracing(context.Background())
+	// Should fail with no valid exporters
+	assert.Error(t, err)
+	assert.Nil(t, tp)
 }
 
 func TestLogCorrelationHook(t *testing.T) {
@@ -69,7 +78,7 @@ func TestLogCorrelationHook(t *testing.T) {
 
 	// Should not panic even without span context
 	assert.NotPanics(t, func() {
-		_ = hook.Fire(entry)
+		hook.Fire(entry)
 	})
 }
 
@@ -85,7 +94,7 @@ func TestLogCorrelationHook_WithSpan(t *testing.T) {
 	}
 
 	// Fire hook - should add trace_id and span_id if span exists
-	_ = hook.Fire(entry)
+	hook.Fire(entry)
 
 	// Since no span is active, no trace fields should be added
 	assert.NotContains(t, entry.Data, "trace_id")
