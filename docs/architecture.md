@@ -169,7 +169,7 @@ The provisioner implements intelligent image caching with compression preservati
 - **Checksum-based caching**: Uses SHA256 checksums from MinIO `.sha256` files as cache keys
 - **Compression-preserving storage**: Images are cached as plain files in `/var/lib/libvirt/images/`, preserving QCOW2 compression instead of expanding to raw format
 - **Cache directory**: Managed by libvirt's `images` storage pool
-- **Fallback behavior**: Falls back to URL-based caching if checksums aren't available
+- **Fallback behavior**: Falls back to a SHA256 hash of the image URL as the cache key if no `.sha256` file is available, ensuring the key is always a safe, collision-resistant filename
 - **Cache validation**: Verifies cached images against checksums before use
 - **Storage efficiency**: Cached QCOW2 images remain compressed, significantly reducing disk space usage
 

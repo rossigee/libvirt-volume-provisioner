@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-03-18
+
+### Fixed
+- **Image cache key fallback**: When no `.sha256` file is available in MinIO, the provisioner now uses a SHA256 hash of the image URL as the cache key instead of the raw URL. This fixes a crash when using HTTPS endpoints with ports (e.g. `https://host:9000/...`) where the raw URL produced an invalid filesystem path.
+
 ## [0.6.0] - 2026-03-12
 
 ### Added
