@@ -2,11 +2,13 @@ package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 // Metrics holds all application metrics
 type Metrics struct {
+	// Registry is the custom prometheus registry for this instance
+	Registry *prometheus.Registry
+
 	// Request metrics
 	RequestsTotal   *prometheus.CounterVec
 	RequestDuration *prometheus.HistogramVec
@@ -39,9 +41,13 @@ type Metrics struct {
 
 // NewMetrics creates and registers all metrics
 func NewMetrics() *Metrics {
+	// Create a custom registry to avoid conflicts with global registry
+	reg := prometheus.NewRegistry()
+
 	m := &Metrics{
+		Registry: reg,
 		// Request metrics
-		RequestsTotal: promauto.NewCounterVec(
+		RequestsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "libvirt_volume_provisioner_requests_total",
 				Help: "Total number of HTTP requests by method, endpoint, and status",
@@ -49,7 +55,7 @@ func NewMetrics() *Metrics {
 			[]string{"method", "endpoint", "status"},
 		),
 
-		RequestDuration: promauto.NewHistogramVec(
+		RequestDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "libvirt_volume_provisioner_request_duration_seconds",
 				Help:    "HTTP request duration in seconds",
@@ -59,14 +65,14 @@ func NewMetrics() *Metrics {
 		),
 
 		// Job metrics
-		ActiveJobs: promauto.NewGauge(
+		ActiveJobs: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "libvirt_volume_provisioner_active_jobs",
 				Help: "Number of currently active jobs",
 			},
 		),
 
-		JobsTotal: promauto.NewCounterVec(
+		JobsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "libvirt_volume_provisioner_jobs_total",
 				Help: "Total number of jobs by status",
@@ -74,7 +80,7 @@ func NewMetrics() *Metrics {
 			[]string{"status"},
 		),
 
-		JobDuration: promauto.NewHistogramVec(
+		JobDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "libvirt_volume_provisioner_job_duration_seconds",
 				Help:    "Job execution duration in seconds",
@@ -84,21 +90,21 @@ func NewMetrics() *Metrics {
 		),
 
 		// Cache metrics
-		CacheHits: promauto.NewCounter(
+		CacheHits: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: "libvirt_volume_provisioner_cache_hits_total",
 				Help: "Total number of cache hits",
 			},
 		),
 
-		CacheMisses: promauto.NewCounter(
+		CacheMisses: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: "libvirt_volume_provisioner_cache_misses_total",
 				Help: "Total number of cache misses",
 			},
 		),
 
-		CacheHitRatio: promauto.NewGauge(
+		CacheHitRatio: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "libvirt_volume_provisioner_cache_hit_ratio",
 				Help: "Cache hit ratio (0.0 to 1.0)",
@@ -106,14 +112,14 @@ func NewMetrics() *Metrics {
 		),
 
 		// Image metrics
-		ImagesDownloaded: promauto.NewCounter(
+		ImagesDownloaded: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: "libvirt_volume_provisioner_images_downloaded_total",
 				Help: "Total number of images downloaded",
 			},
 		),
 
-		ImageDownloadSize: promauto.NewHistogramVec(
+		ImageDownloadSize: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "libvirt_volume_provisioner_image_download_size_bytes",
 				Help:    "Size of downloaded images in bytes",
@@ -122,7 +128,7 @@ func NewMetrics() *Metrics {
 			[]string{"image_type"},
 		),
 
-		ImageErrors: promauto.NewCounterVec(
+		ImageErrors: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "libvirt_volume_provisioner_image_errors_total",
 				Help: "Total number of image operation errors",
@@ -131,7 +137,7 @@ func NewMetrics() *Metrics {
 		),
 
 		// Storage metrics
-		StorageOperations: promauto.NewCounterVec(
+		StorageOperations: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "libvirt_volume_provisioner_storage_operations_total",
 				Help: "Total number of storage operations",
@@ -139,7 +145,7 @@ func NewMetrics() *Metrics {
 			[]string{"operation", "result"},
 		),
 
-		StorageErrors: promauto.NewCounterVec(
+		StorageErrors: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "libvirt_volume_provisioner_storage_errors_total",
 				Help: "Total number of storage operation errors",
@@ -148,14 +154,14 @@ func NewMetrics() *Metrics {
 		),
 
 		// Health metrics
-		HealthStatus: promauto.NewGauge(
+		HealthStatus: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "libvirt_volume_provisioner_health_status",
 				Help: "Overall health status (1 = healthy, 0 = unhealthy)",
 			},
 		),
 
-		DependenciesUp: promauto.NewGaugeVec(
+		DependenciesUp: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "libvirt_volume_provisioner_dependencies_up",
 				Help: "Status of external dependencies (1 = up, 0 = down)",
@@ -163,6 +169,25 @@ func NewMetrics() *Metrics {
 			[]string{"dependency"},
 		),
 	}
+
+	// Register all metrics with the custom registry
+	reg.MustRegister(
+		m.RequestsTotal,
+		m.RequestDuration,
+		m.ActiveJobs,
+		m.JobsTotal,
+		m.JobDuration,
+		m.CacheHits,
+		m.CacheMisses,
+		m.CacheHitRatio,
+		m.ImagesDownloaded,
+		m.ImageDownloadSize,
+		m.ImageErrors,
+		m.StorageOperations,
+		m.StorageErrors,
+		m.HealthStatus,
+		m.DependenciesUp,
+	)
 
 	return m
 }

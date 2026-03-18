@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-03-18
+
+### Fixed
+- **Prometheus metrics not served**: The custom Prometheus registry created in `NewMetrics()` was discarded instead of being stored, so `/metrics` served an empty default registry. The registry is now stored on the `Metrics` struct and used by the `/metrics` HTTP handler.
+
 ## [0.6.1] - 2026-03-18
 
 ### Fixed

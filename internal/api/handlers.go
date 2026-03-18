@@ -105,7 +105,11 @@ func SetupRoutes(router *gin.Engine, handler *Handler, authMiddleware gin.Handle
 	router.Use(metricsMiddleware(handler.metrics))
 
 	// Public endpoints (no auth required)
-	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
+	metricsHandler := promhttp.Handler()
+	if handler.metrics != nil {
+		metricsHandler = promhttp.HandlerFor(handler.metrics.Registry, promhttp.HandlerOpts{})
+	}
+	router.GET("/metrics", gin.WrapH(metricsHandler))
 	router.GET("/health", handler.HealthCheck)
 	router.GET("/healthz", handler.HealthCheck)
 	router.GET("/livez", handler.HealthCheck)
