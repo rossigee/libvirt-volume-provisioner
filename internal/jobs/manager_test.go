@@ -474,6 +474,30 @@ func TestProvisionVolume_NoDependencies(t *testing.T) {
 	assert.Contains(t, err.Error(), "dependencies not initialized")
 }
 
+// TestURLCacheKey verifies that urlCacheKey returns a stable, filesystem-safe hex string
+// and never embeds the raw URL (which would produce invalid paths when used as a filename).
+func TestURLCacheKey(t *testing.T) {
+	urls := []string{
+		"https://backups.golder.lan:9000/vmnode-images/runner.qcow2",
+		"http://minio:9000/bucket/image.qcow2",
+		"https://example.com/path/to/image.qcow2",
+	}
+	for _, u := range urls {
+		key := urlCacheKey(u)
+		// Must be a 64-char hex string (SHA256)
+		assert.Len(t, key, 64)
+		assert.Regexp(t, `^[0-9a-f]+$`, key)
+		// Must not contain URL-unsafe characters
+		assert.NotContains(t, key, ":")
+		assert.NotContains(t, key, "/")
+		assert.NotContains(t, key, "https")
+		// Must be stable
+		assert.Equal(t, key, urlCacheKey(u))
+	}
+	// Different URLs must produce different keys
+	assert.NotEqual(t, urlCacheKey(urls[0]), urlCacheKey(urls[1]))
+}
+
 // TestGetImageChecksum_NoMinIO tests getImageChecksum with no MinIO client
 func TestGetImageChecksum_NoMinIO(t *testing.T) {
 	manager := &Manager{

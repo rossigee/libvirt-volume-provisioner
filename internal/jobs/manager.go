@@ -4,6 +4,8 @@ package jobs
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -443,6 +445,12 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	return nil
 }
 
+// urlCacheKey returns a safe filesystem cache key derived from a URL by SHA256-hashing it.
+func urlCacheKey(rawURL string) string {
+	h := sha256.Sum256([]byte(rawURL))
+	return hex.EncodeToString(h[:])
+}
+
 // getOrDownloadImage checks cache or downloads image and returns the path
 func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionRequest, job *Job) (string, error) {
 	tracer := otel.Tracer("job-manager")
@@ -460,7 +468,7 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 		checksumSpan.RecordError(err)
 		checksumSpan.SetStatus(codes.Error, "failed to get checksum")
 		logrus.WithError(err).Warn("Failed to get image checksum from MinIO, using URL as cache key")
-		checksum = req.ImageURL // Fallback to URL
+		checksum = urlCacheKey(req.ImageURL)
 	} else {
 		checksumSpan.SetAttributes(attribute.String("image.checksum", checksum))
 		checksumSpan.SetStatus(codes.Ok, "checksum retrieved")
@@ -553,7 +561,7 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 		checksum, err = libvirt.CalculateChecksum(imagePath)
 		if err != nil {
 			logrus.WithError(err).Warn("Failed to calculate checksum, cache may not work properly")
-			checksum = req.ImageURL // Fallback to URL as cache key
+			checksum = urlCacheKey(req.ImageURL)
 		}
 	}
 
