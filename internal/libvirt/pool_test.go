@@ -116,6 +116,31 @@ func TestCheckCacheCacheHit(t *testing.T) {
 	assert.Greater(t, cache.Size, uint64(0))
 }
 
+// TestCheckCache_ReturnsStoredChecksumContent verifies that CheckCache returns the content
+// of the .sha256 file as Checksum, not the cache key used to locate the file.
+// This is the regression test for the bug where cacheKey was returned instead of the stored
+// checksum, which broke stale-cache detection when the URL-hash key differs from the image hash.
+func TestCheckCache_ReturnsStoredChecksumContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	pm := &PoolManager{poolPath: tmpDir}
+
+	cacheKey := "urlhash_stable_filename_key"
+	storedChecksum := "a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
+
+	require.NotEqual(t, cacheKey, storedChecksum, "test requires key and content to differ")
+
+	imagePath := filepath.Join(tmpDir, cacheKey)
+	require.NoError(t, os.WriteFile(imagePath, []byte("fake image data"), 0o600))
+	require.NoError(t, os.WriteFile(imagePath+".sha256", []byte(storedChecksum), 0o600))
+
+	cache, err := pm.CheckCache(cacheKey)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, cache)
+	assert.Equal(t, storedChecksum, cache.Checksum, "Checksum must be file content, not the cache key")
+	assert.NotEqual(t, cacheKey, cache.Checksum, "must not return the lookup key as the checksum")
+}
+
 func TestCheckCacheMiss(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := &PoolManager{
