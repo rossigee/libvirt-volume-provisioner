@@ -498,6 +498,69 @@ func TestURLCacheKey(t *testing.T) {
 	assert.NotEqual(t, urlCacheKey(urls[0]), urlCacheKey(urls[1]))
 }
 
+// TestParseChecksumFile verifies that both raw-hash and sha256sum(1) formats are accepted,
+// and that invalid content is rejected. This is the regression test for the bug where
+// sha256sum-format files were silently rejected (len > 64), causing fallback to URL hash.
+func TestParseChecksumFile(t *testing.T) {
+	validHash := "a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
+
+	tests := []struct {
+		name        string
+		input       []byte
+		expectHash  string
+		expectError bool
+	}{
+		{
+			name:       "raw hash",
+			input:      []byte(validHash),
+			expectHash: validHash,
+		},
+		{
+			name:       "raw hash with trailing newline",
+			input:      []byte(validHash + "\n"),
+			expectHash: validHash,
+		},
+		{
+			name:       "sha256sum format (hash  filename)",
+			input:      []byte(validHash + "  image.qcow2\n"),
+			expectHash: validHash,
+		},
+		{
+			name:       "sha256sum format with star (hash *filename)",
+			input:      []byte(validHash + " *image.qcow2\n"),
+			expectHash: validHash,
+		},
+		{
+			name:        "empty content",
+			input:       []byte(""),
+			expectError: true,
+		},
+		{
+			name:        "too short",
+			input:       []byte("abc123"),
+			expectError: true,
+		},
+		{
+			name:        "too long bare hash",
+			input:       []byte(validHash + "extra"),
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseChecksumFile(tt.input)
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Empty(t, got)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectHash, got)
+			}
+		})
+	}
+}
+
 // TestGetImageChecksum_NoMinIO tests getImageChecksum with no MinIO client
 func TestGetImageChecksum_NoMinIO(t *testing.T) {
 	manager := &Manager{

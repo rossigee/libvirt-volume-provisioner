@@ -451,7 +451,25 @@ func urlCacheKey(rawURL string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// getOrDownloadImage checks cache or downloads image and returns the path
+// parseChecksumFile extracts a 64-char hex SHA256 hash from checksum file content.
+// Handles both raw-hash format ("abc...64chars\n") and sha256sum(1) format ("abc...64chars  filename").
+func parseChecksumFile(data []byte) (string, error) {
+	checksum := strings.TrimSpace(string(data))
+	// sha256sum(1) produces "HASH  filename"; take only the first field
+	if fields := strings.Fields(checksum); len(fields) > 0 {
+		checksum = fields[0]
+	}
+	if len(checksum) != 64 {
+		return "", fmt.Errorf("invalid checksum format: expected 64 hex characters, got %d", len(checksum))
+	}
+	return checksum, nil
+}
+
+// getOrDownloadImage checks cache or downloads image and returns the path.
+// The cache key is always derived from the URL (stable identifier for the image source).
+// If a remote checksum is available from MinIO, it is compared against the stored checksum
+// of the cached file; a mismatch triggers a fresh download. After any download, the local
+// checksum is computed and stored so future requests can verify cache freshness.
 func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionRequest, job *Job) (string, error) {
 	tracer := otel.Tracer("job-manager")
 
@@ -460,69 +478,101 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 		return "", fmt.Errorf("job manager dependencies not initialized")
 	}
 
-	// Get checksum from MinIO .sha256 file
+	// Cache key is always the URL hash — stable filename regardless of checksum availability
+	cacheKey := urlCacheKey(req.ImageURL)
+
+	// Fetch remote checksum from MinIO (best-effort; may not exist)
 	checksumCtx, checksumSpan := tracer.Start(ctx, "getImageChecksum",
 		trace.WithAttributes(attribute.String("image.url", req.ImageURL)))
-	checksum, err := m.getImageChecksum(checksumCtx, req.ImageURL)
-	if err != nil {
-		checksumSpan.RecordError(err)
-		checksumSpan.SetStatus(codes.Error, "failed to get checksum")
-		logrus.WithError(err).Warn("Failed to get image checksum from MinIO, using URL as cache key")
-		checksum = urlCacheKey(req.ImageURL)
+	remoteChecksum, remoteChecksumErr := m.getImageChecksum(checksumCtx, req.ImageURL)
+	hasRemoteChecksum := remoteChecksumErr == nil
+	if !hasRemoteChecksum {
+		checksumSpan.RecordError(remoteChecksumErr)
+		checksumSpan.SetStatus(codes.Error, "remote checksum unavailable")
+		logrus.WithError(remoteChecksumErr).Debug("Remote checksum not available from MinIO")
 	} else {
-		checksumSpan.SetAttributes(attribute.String("image.checksum", checksum))
+		checksumSpan.SetAttributes(attribute.String("image.checksum", remoteChecksum))
 		checksumSpan.SetStatus(codes.Ok, "checksum retrieved")
 	}
 	checksumSpan.End()
 
-	// Check if image is cached using checksum as key
+	// Check local cache
 	_, cacheSpan := tracer.Start(ctx, "checkImageCache",
 		trace.WithAttributes(
-			attribute.String("image.checksum", checksum),
+			attribute.String("cache.key", cacheKey),
 			attribute.String("image.url", req.ImageURL),
 		))
-	cachedImage, err := m.libvirtPool.CheckCache(checksum)
-	if err != nil {
-		cacheSpan.RecordError(err)
-		logrus.WithError(err).Warn("Failed to check image cache, proceeding with download")
+	cachedImage, cacheCheckErr := m.libvirtPool.CheckCache(cacheKey)
+	if cacheCheckErr != nil {
+		cacheSpan.RecordError(cacheCheckErr)
+		logrus.WithError(cacheCheckErr).Warn("Failed to check image cache, proceeding with download")
 	}
 
 	if cachedImage != nil {
-		cacheSpan.SetAttributes(
-			attribute.String("cache.result", "hit"),
-			attribute.String("cache.path", cachedImage.Path),
-			attribute.Int64("cache.size", int64(cachedImage.Size)),
-		)
-		cacheSpan.SetStatus(codes.Ok, "cache hit")
+		if !hasRemoteChecksum {
+			// No remote checksum to compare against; trust the cached image
+			cacheSpan.SetAttributes(
+				attribute.String("cache.result", "hit_unverified"),
+				attribute.String("cache.path", cachedImage.Path),
+			)
+			cacheSpan.SetStatus(codes.Ok, "cache hit (unverified)")
+			cacheSpan.End()
+			logrus.WithFields(logrus.Fields{
+				"job_id":    job.ID,
+				"image_url": req.ImageURL,
+				"cache_key": cacheKey,
+				"cache_hit": true,
+			}).Info("Using cached image (remote checksum unavailable for verification)")
+			job.CacheHit = true
+			job.ImagePath = cachedImage.Path
+			return cachedImage.Path, nil
+		}
+
+		if cachedImage.Checksum == remoteChecksum {
+			// Stored checksum matches remote: cache is fresh
+			cacheSpan.SetAttributes(
+				attribute.String("cache.result", "hit"),
+				attribute.String("cache.path", cachedImage.Path),
+				attribute.String("image.checksum", remoteChecksum),
+			)
+			cacheSpan.SetStatus(codes.Ok, "cache hit (verified)")
+			cacheSpan.End()
+			logrus.WithFields(logrus.Fields{
+				"job_id":      job.ID,
+				"image_url":   req.ImageURL,
+				"checksum":    remoteChecksum,
+				"cached_path": cachedImage.Path,
+				"cache_hit":   true,
+			}).Info("Using cached image (checksum verified)")
+			job.CacheHit = true
+			job.ImagePath = cachedImage.Path
+			return cachedImage.Path, nil
+		}
+
+		// Checksum mismatch: cached image is stale
 		logrus.WithFields(logrus.Fields{
-			"job_id":      job.ID,
-			"image_url":   req.ImageURL,
-			"checksum":    checksum,
-			"cached_path": cachedImage.Path,
-			"cache_hit":   true,
-		}).Info("Using cached image")
-		job.CacheHit = true
-		job.ImagePath = cachedImage.Path
-		cacheSpan.End()
-		return cachedImage.Path, nil
+			"job_id":          job.ID,
+			"image_url":       req.ImageURL,
+			"stored_checksum": cachedImage.Checksum,
+			"remote_checksum": remoteChecksum,
+		}).Warn("Cached image is stale (checksum mismatch), re-downloading")
+		_ = m.libvirtPool.DeleteImage(cachedImage.Path)
 	}
 
 	cacheSpan.SetAttributes(attribute.String("cache.result", "miss"))
 	cacheSpan.SetStatus(codes.Ok, "cache miss")
 	cacheSpan.End()
 
-	// Image not cached, need to download
+	// Image not cached or stale; download fresh copy
 	logrus.WithFields(logrus.Fields{
 		"job_id":    job.ID,
 		"image_url": req.ImageURL,
 		"cache_hit": false,
 	}).Info("Image not cached, downloading")
 
-	// Allocate file path in cache directory using checksum as key.
-	// This preserves compression for QCOW2 images by storing them as plain files.
 	_, allocSpan := tracer.Start(ctx, "allocateImageFile",
-		trace.WithAttributes(attribute.String("image.checksum", checksum)))
-	imagePath, err := m.libvirtPool.AllocateImageFile(checksum)
+		trace.WithAttributes(attribute.String("cache.key", cacheKey)))
+	imagePath, err := m.libvirtPool.AllocateImageFile(cacheKey)
 	if err != nil {
 		allocSpan.RecordError(err)
 		allocSpan.SetStatus(codes.Error, "failed to allocate cache file")
@@ -533,11 +583,9 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 	allocSpan.SetStatus(codes.Ok, "cache file allocated")
 	allocSpan.End()
 
-	// Download image to cache path
 	job.Progress.Stage = "downloading"
 	job.Progress.Percent = 10
 
-	// Debug: Check context before download
 	select {
 	case <-ctx.Done():
 		logrus.WithFields(logrus.Fields{
@@ -550,29 +598,26 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 	}
 
 	if err := m.minioClient.DownloadImageToPath(ctx, req.ImageURL, imagePath, job); err != nil {
-		// Cleanup failed download
 		_ = m.libvirtPool.DeleteImage(imagePath)
 		return "", fmt.Errorf("failed to download image: %w", err)
 	}
 
-	// If we don't have a checksum from MinIO, calculate it locally
-	if checksum == "" {
-		var err error
-		checksum, err = libvirt.CalculateChecksum(imagePath)
-		if err != nil {
-			logrus.WithError(err).Warn("Failed to calculate checksum, cache may not work properly")
-			checksum = urlCacheKey(req.ImageURL)
+	// Compute checksum of the downloaded image and store it as the cache entry.
+	// This checksum is used on future requests to detect stale cached images.
+	localChecksum, checksumErr := libvirt.CalculateChecksum(imagePath)
+	if checksumErr != nil {
+		logrus.WithError(checksumErr).Warn("Failed to calculate local checksum for downloaded image")
+	} else {
+		if err := m.libvirtPool.CreateCacheEntry(imagePath, localChecksum); err != nil {
+			logrus.WithError(err).Warn("Failed to create cache entry")
 		}
 	}
 
-	if err := m.libvirtPool.CreateCacheEntry(imagePath, checksum); err != nil {
-		logrus.WithError(err).Warn("Failed to create cache entry")
-	}
-
 	logrus.WithFields(logrus.Fields{
-		"job_id":     job.ID,
-		"image_path": imagePath,
-		"checksum":   checksum,
+		"job_id":          job.ID,
+		"image_path":      imagePath,
+		"local_checksum":  localChecksum,
+		"remote_checksum": remoteChecksum,
 	}).Info("Image downloaded and cached")
 
 	job.CacheHit = false
@@ -603,9 +648,9 @@ func (m *Manager) getImageChecksum(ctx context.Context, imageURL string) (string
 		return "", fmt.Errorf("checksum file not found or unreadable: %w", err)
 	}
 
-	checksum := strings.TrimSpace(string(checksumData))
-	if len(checksum) != 64 {
-		return "", fmt.Errorf("invalid checksum format: expected 64 characters, got %d", len(checksum))
+	checksum, err := parseChecksumFile(checksumData)
+	if err != nil {
+		return "", fmt.Errorf("invalid checksum file content: %w", err)
 	}
 
 	return checksum, nil

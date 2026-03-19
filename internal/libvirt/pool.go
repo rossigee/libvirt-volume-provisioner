@@ -186,7 +186,13 @@ func (pm *PoolManager) CheckCache(cacheKey string) (*ImageCache, error) {
 		return nil, fmt.Errorf("failed to stat image file: %w", err)
 	}
 
-	// Return cached image information
+	// Read stored checksum from .sha256 file
+	//nolint:gosec // checksumFile is constructed from controlled pool path + hex cache key
+	storedChecksumData, err := os.ReadFile(checksumFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read checksum file: %w", err)
+	}
+
 	size := fileInfo.Size()
 	if size < 0 {
 		return nil, fmt.Errorf("invalid file size: %d", size)
@@ -194,7 +200,7 @@ func (pm *PoolManager) CheckCache(cacheKey string) (*ImageCache, error) {
 	cache := &ImageCache{
 		Path:     imagePath,
 		Size:     uint64(size),
-		Checksum: cacheKey,
+		Checksum: strings.TrimSpace(string(storedChecksumData)),
 	}
 
 	return cache, nil
