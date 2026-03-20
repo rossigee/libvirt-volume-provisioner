@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-03-20
+
+### Fixed
+- **Image cache mechanism**: Three bugs caused cached images to be re-downloaded on every request:
+  - The local file checksum computation after download was dead code — the fallback always set a non-empty cache key before reaching it, so the actual SHA256 of the downloaded file was never computed or stored.
+  - The cache lookup key switched between `SHA256(image content)` (when a MinIO `.sha256` file was present) and `SHA256(URL)` (when absent), causing guaranteed cache misses whenever MinIO `.sha256` availability changed between runs.
+  - Checksum files in `sha256sum(1)` format (`HASH  filename`) were silently rejected by a strict 64-character length check, causing all such files to fall back to URL-hash keying even when a valid remote checksum was available.
+- **Cache design corrected**: The cache key is now always `SHA256(URL)` (stable filesystem identifier). After each download the actual file checksum is computed and stored in the `.sha256` sentinel. On subsequent requests, if a remote checksum is available from MinIO it is compared against the stored value; a mismatch triggers a fresh download (stale cache eviction). Both raw-hash and `sha256sum(1)` format checksum files are now accepted.
+
 ## [0.6.2] - 2026-03-18
 
 ### Fixed
