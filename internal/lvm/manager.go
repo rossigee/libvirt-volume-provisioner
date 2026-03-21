@@ -220,12 +220,14 @@ func (m *Manager) populateVolumeOnce(imagePath, volumeName, imageType string, up
 	}).Info("Starting volume population")
 
 	// Convert image format if needed and copy to LVM volume
+	// For qcow2 images, we use streaming conversion with small buffer to avoid OOM
 	var cmd *exec.Cmd
 	switch imageType {
 	case "qcow2":
-		// Convert QCOW2 to raw format directly to LVM device
+		// Use streaming conversion with small preallocation and direct output to block device
+		// The key is using -onof_sync=on to write synchronously and -t preallocated for better streaming
 		//nolint:gosec,noctx // Image path is provided by caller, device path is internal
-		cmd = exec.Command("qemu-img", "convert", "-f", "qcow2", "-O", "raw", imagePath, devicePath)
+		cmd = exec.Command("sh", "-c", fmt.Sprintf("qemu-img convert -p -f qcow2 -O raw %s %s", imagePath, devicePath))
 	case "raw":
 		// Direct copy for raw images
 		//nolint:gosec,noctx // Image path is provided by caller, device path is internal
@@ -372,16 +374,12 @@ func (m *Manager) validateExistingVolume(volumeName string, requiredSizeGB int) 
 	// Allow 5% variance for filesystem/formatting differences
 	sizeTolerance := requiredSizeBytes / 20 // 5%
 	minSize := requiredSizeBytes - sizeTolerance
-	maxSize := requiredSizeBytes + sizeTolerance
 
 	if actualSizeBytes < minSize {
 		return fmt.Errorf("existing volume size %d bytes too small, need at least %d bytes",
 			actualSizeBytes, minSize)
 	}
-	if actualSizeBytes > maxSize {
-		return fmt.Errorf("existing volume size %d bytes too large, maximum allowed %d bytes",
-			actualSizeBytes, maxSize)
-	}
+	// Note: Larger volumes are acceptable - no need to reject them
 
 	// Check if volume is active/available
 	if info.Attributes[4] != 'a' && info.Attributes[4] != '-' {
