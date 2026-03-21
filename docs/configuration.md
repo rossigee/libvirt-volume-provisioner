@@ -34,6 +34,15 @@ The libvirt-volume-provisioner is configured via environment variables.
 | `LVM_RETRY_ATTEMPTS` | Number of LVM retry attempts | `2` | No |
 | `LVM_RETRY_BACKOFF_MS` | LVM retry backoff delays (comma-separated) | `100,1000` | No |
 
+### Cache Eviction Configuration
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `CACHE_MAX_AGE` | Maximum age of a cached image before eviction (Go duration format) | `168h` (7 days) | No |
+| `CACHE_EVICTION_INTERVAL` | How often to run the eviction sweep (Go duration format) | `1h` | No |
+
+Use any value accepted by Go's `time.ParseDuration`, e.g. `24h`, `72h`, `168h`.
+
 ### Database Configuration
 
 | Variable | Description | Default | Required |

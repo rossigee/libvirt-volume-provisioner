@@ -212,12 +212,14 @@ List all cached images on the hypervisor host.
     {
       "path": "/var/lib/libvirt/images/ubuntu-20.04.qcow2",
       "size": 2147483648,
-      "checksum": "abc123def456..."
+      "checksum": "abc123def456...",
+      "mod_time": "2026-03-13T09:00:00Z"
     },
     {
       "path": "/var/lib/libvirt/images/centos-8.qcow2",
       "size": 4294967296,
-      "checksum": "def789ghi012..."
+      "checksum": "def789ghi012...",
+      "mod_time": "2026-03-10T14:22:11Z"
     }
   ],
   "count": 2
@@ -229,6 +231,7 @@ List all cached images on the hypervisor host.
   - `path`: Full filesystem path to the cached image
   - `size`: Image size in bytes
   - `checksum`: SHA256 checksum of the image
+  - `mod_time`: RFC3339 timestamp of when the image was last cached (mtime of the `.sha256` sidecar)
 - `count`: Total number of cached images
 - `offset`: Current offset in the result set
 - `limit`: Maximum number of items returned
@@ -271,6 +274,47 @@ Fetch and cache an image without creating a volume (prewarming).
   "error": "invalid request",
   "message": "image_url is required",
   "code": 400
+}
+```
+
+---
+
+### DELETE /api/v1/cache/images/:key
+
+Manually delete a specific cached image by its cache key.
+
+**Description:**
+- Immediately removes the image file and its `.sha256` sidecar from the cache
+- The key is the 64-character hex SHA256 hash of the image URL (visible in the `path` basename from `GET /api/v1/cache/images`)
+- Complements automatic TTL-based eviction for on-demand cache management
+
+**Path Parameters:**
+- `key` (required): 64-character hex SHA256 cache key
+
+**Response (Success - 200 OK):**
+
+```json
+{
+  "status": "deleted",
+  "key": "a3b4c5d6e7f8..."
+}
+```
+
+**Response (Error - 400 Bad Request):**
+
+```json
+{
+  "error": "invalid key",
+  "code": 400
+}
+```
+
+**Response (Error - 500 Internal Server Error):**
+
+```json
+{
+  "error": "failed to resolve cache path: ...",
+  "code": 500
 }
 ```
 

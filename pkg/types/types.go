@@ -77,9 +77,10 @@ type HealthResponse struct {
 
 // CachedImageInfo represents information about a cached image.
 type CachedImageInfo struct {
-	Path     string `json:"path"`
-	Size     uint64 `json:"size"`
-	Checksum string `json:"checksum"`
+	Path     string    `json:"path"`
+	Size     uint64    `json:"size"`
+	Checksum string    `json:"checksum"`
+	ModTime  time.Time `json:"mod_time"`
 }
 
 // ListCachedImagesResponse represents the response for listing cached images.

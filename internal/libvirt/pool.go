@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/libvirt/libvirt-go"
 	"github.com/sirupsen/logrus"
@@ -19,6 +20,7 @@ type ImageCache struct {
 	Path     string
 	Size     uint64
 	Checksum string
+	ModTime  time.Time // mtime of the .sha256 sidecar — reliable "last cached at"
 }
 
 // PoolManager handles libvirt storage pool operations for image caching
@@ -197,10 +199,17 @@ func (pm *PoolManager) CheckCache(cacheKey string) (*ImageCache, error) {
 	if size < 0 {
 		return nil, fmt.Errorf("invalid file size: %d", size)
 	}
+
+	sidecarInfo, err := os.Stat(checksumFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat checksum file: %w", err)
+	}
+
 	cache := &ImageCache{
 		Path:     imagePath,
 		Size:     uint64(size),
 		Checksum: strings.TrimSpace(string(storedChecksumData)),
+		ModTime:  sidecarInfo.ModTime(),
 	}
 
 	return cache, nil
@@ -324,15 +333,54 @@ func (pm *PoolManager) ListCachedImages() ([]*ImageCache, error) {
 			continue
 		}
 
+		sidecarInfo, err := entry.Info()
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"cache_key":     cacheKey,
+				"checksum_file": checksumFile,
+			}).Warn("Failed to stat checksum file for modtime")
+			continue
+		}
+
 		cache := &ImageCache{
 			Path: imagePath,
 			// #nosec G115 // size is checked to be non-negative above
 			Size:     uint64(size),
 			Checksum: cacheKey,
+			ModTime:  sidecarInfo.ModTime(),
 		}
 
 		cachedImages = append(cachedImages, cache)
 	}
 
 	return cachedImages, nil
+}
+
+// EvictExpiredImages removes cached images whose .sha256 sidecar mtime is
+// older than maxAge. Individual delete failures are logged but non-fatal.
+func (pm *PoolManager) EvictExpiredImages(maxAge time.Duration) (int, error) {
+	images, err := pm.ListCachedImages()
+	if err != nil {
+		return 0, fmt.Errorf("eviction: failed to list cached images: %w", err)
+	}
+	cutoff := time.Now().Add(-maxAge)
+	evicted := 0
+	for _, img := range images {
+		if img.ModTime.Before(cutoff) {
+			logrus.WithFields(logrus.Fields{
+				"image_path": img.Path,
+				"age":        time.Since(img.ModTime).Round(time.Second),
+				"max_age":    maxAge,
+			}).Info("Evicting expired cached image")
+			if err := pm.DeleteImage(img.Path); err != nil {
+				logrus.WithError(err).WithField("image_path", img.Path).
+					Error("Failed to evict expired image")
+				continue
+			}
+			evicted++
+		}
+	}
+	logrus.WithFields(logrus.Fields{"evicted": evicted, "total": len(images)}).
+		Info("Cache eviction sweep completed")
+	return evicted, nil
 }
