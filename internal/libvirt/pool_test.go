@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -373,4 +374,73 @@ func TestCalculateChecksumNonExistent(t *testing.T) {
 	checksum, err := CalculateChecksum("/var/lib/libvirt/nonexistent_file")
 	assert.Error(t, err)
 	assert.Empty(t, checksum)
+}
+
+func TestEvictExpiredImages_ListError(t *testing.T) {
+	// Point poolPath at a file (not a directory) so ReadDir fails inside ListCachedImages
+	tmpDir := t.TempDir()
+	notADir := filepath.Join(tmpDir, "notadir")
+	require.NoError(t, os.WriteFile(notADir, []byte("x"), 0o600))
+
+	pm := &PoolManager{poolPath: notADir}
+
+	_, err := pm.EvictExpiredImages(24 * time.Hour)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "eviction")
+}
+
+func TestEvictExpiredImages(t *testing.T) {
+	t.Run("evicts old entries, keeps new ones", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pm := &PoolManager{poolPath: tmpDir}
+
+		oldKey := "oldcachedimage"
+		newKey := "newcachedimage"
+
+		for _, key := range []string{oldKey, newKey} {
+			imgPath := filepath.Join(tmpDir, key)
+			require.NoError(t, os.WriteFile(imgPath, []byte("data"), 0o600))
+			require.NoError(t, os.WriteFile(imgPath+".sha256", []byte(key), 0o600))
+		}
+
+		// Backdate the old entry's sidecar to 8 days ago
+		oldTime := time.Now().Add(-8 * 24 * time.Hour)
+		require.NoError(t, os.Chtimes(filepath.Join(tmpDir, oldKey+".sha256"), oldTime, oldTime))
+
+		evicted, err := pm.EvictExpiredImages(7 * 24 * time.Hour)
+		assert.NoError(t, err)
+		assert.Equal(t, 1, evicted)
+
+		_, err = os.Stat(filepath.Join(tmpDir, oldKey))
+		assert.True(t, os.IsNotExist(err), "old image should be deleted")
+
+		_, err = os.Stat(filepath.Join(tmpDir, newKey))
+		assert.NoError(t, err, "new image should survive")
+	})
+
+	t.Run("empty cache returns zero evictions", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pm := &PoolManager{poolPath: tmpDir}
+
+		evicted, err := pm.EvictExpiredImages(24 * time.Hour)
+		assert.NoError(t, err)
+		assert.Equal(t, 0, evicted)
+	})
+
+	t.Run("no entries old enough leaves cache unchanged", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pm := &PoolManager{poolPath: tmpDir}
+
+		key := "recentimage"
+		imgPath := filepath.Join(tmpDir, key)
+		require.NoError(t, os.WriteFile(imgPath, []byte("data"), 0o600))
+		require.NoError(t, os.WriteFile(imgPath+".sha256", []byte(key), 0o600))
+
+		evicted, err := pm.EvictExpiredImages(24 * time.Hour)
+		assert.NoError(t, err)
+		assert.Equal(t, 0, evicted)
+
+		_, err = os.Stat(imgPath)
+		assert.NoError(t, err, "recent image should not be evicted")
+	})
 }

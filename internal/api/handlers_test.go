@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -55,6 +56,8 @@ func (m *MockJobManager) FetchImageToCache(ctx context.Context, req types.FetchI
 	return "test-cache-job-id", nil
 }
 
+func (m *MockJobManager) DeleteCachedImage(_ string) error { return nil }
+
 func TestNewHandler(t *testing.T) {
 	mockManager := &MockJobManager{}
 	handler := NewHandler(mockManager, nil, "test-version")
@@ -93,6 +96,7 @@ func TestSetupRoutes(t *testing.T) {
 	assert.True(t, routePaths["POST /api/v1/jobs/:job_id/cancel"])
 	assert.True(t, routePaths["GET /api/v1/cache/images"])
 	assert.True(t, routePaths["POST /api/v1/cache/fetch"])
+	assert.True(t, routePaths["DELETE /api/v1/cache/images/:key"])
 	assert.True(t, routePaths["GET /health"])
 	assert.True(t, routePaths["GET /healthz"])
 	assert.True(t, routePaths["GET /livez"])
@@ -206,6 +210,89 @@ func TestProvisionVolume_ValidRequest(t *testing.T) {
 	assert.Equal(t, "https://minio.example.com/bucket/image.qcow2", mockManager.lastRequest.ImageURL)
 	assert.Equal(t, "test-volume", mockManager.lastRequest.VolumeName)
 	assert.Equal(t, 10, mockManager.lastRequest.VolumeSizeGB)
+}
+
+func TestListCachedImages(t *testing.T) {
+	mockManager := &MockJobManager{}
+	handler := NewHandler(mockManager, nil, "test-version")
+
+	router := gin.New()
+	authMiddleware := func(c *gin.Context) { c.Next() }
+	SetupRoutes(router, handler, authMiddleware)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		"/api/v1/cache/images", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "images")
+	assert.Contains(t, w.Body.String(), "count")
+}
+
+func TestDeleteCachedImage_InvalidKey(t *testing.T) {
+	mockManager := &MockJobManager{}
+	handler := NewHandler(mockManager, nil, "test-version")
+
+	router := gin.New()
+	authMiddleware := func(c *gin.Context) { c.Next() }
+	SetupRoutes(router, handler, authMiddleware)
+
+	w := httptest.NewRecorder()
+	// Key is shorter than 64 chars — should be rejected
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete,
+		"/api/v1/cache/images/tooshort", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid key")
+}
+
+func TestDeleteCachedImage_ManagerError(t *testing.T) {
+	errMock := &errorDeleteMockJobManager{}
+	handler := NewHandler(errMock, nil, "test-version")
+
+	router := gin.New()
+	authMiddleware := func(c *gin.Context) { c.Next() }
+	SetupRoutes(router, handler, authMiddleware)
+
+	key := "a3b4c5d6e7f8a3b4c5d6e7f8a3b4c5d6e7f8a3b4c5d6e7f8a3b4c5d6e7f8a3b4"
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete,
+		"/api/v1/cache/images/"+key, nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "simulated delete error")
+}
+
+func TestDeleteCachedImage_ValidKey(t *testing.T) {
+	mockManager := &MockJobManager{}
+	handler := NewHandler(mockManager, nil, "test-version")
+
+	router := gin.New()
+	authMiddleware := func(c *gin.Context) { c.Next() }
+	SetupRoutes(router, handler, authMiddleware)
+
+	// 64-char hex key
+	key := "a3b4c5d6e7f8a3b4c5d6e7f8a3b4c5d6e7f8a3b4c5d6e7f8a3b4c5d6e7f8a3b4"
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete,
+		"/api/v1/cache/images/"+key, nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "deleted")
+	assert.Contains(t, w.Body.String(), key)
+}
+
+// errorDeleteMockJobManager is a MockJobManager variant whose DeleteCachedImage always errors.
+type errorDeleteMockJobManager struct {
+	MockJobManager
+}
+
+func (m *errorDeleteMockJobManager) DeleteCachedImage(_ string) error {
+	return errors.New("simulated delete error")
 }
 
 func TestFetchImageToCache_ValidRequest(t *testing.T) {

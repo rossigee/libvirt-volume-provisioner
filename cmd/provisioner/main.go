@@ -426,6 +426,8 @@ func main() {
 	<-quit
 	logrus.Info("Shutting down server...")
 
+	jobManager.Stop()
+
 	// Give outstanding requests 30 seconds to complete
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

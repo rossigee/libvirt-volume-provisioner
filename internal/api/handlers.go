@@ -27,6 +27,7 @@ type JobManager interface {
 	GetJobCacheInfo(jobID string) (cacheHit bool, imagePath string, err error)
 	ListCachedImages() ([]*libvirt.ImageCache, error)
 	FetchImageToCache(ctx context.Context, req types.FetchImageToCacheRequest) (string, error)
+	DeleteCachedImage(cacheKey string) error
 }
 
 // Handler handles HTTP API requests
@@ -123,6 +124,7 @@ func SetupRoutes(router *gin.Engine, handler *Handler, authMiddleware gin.Handle
 		api.POST("/jobs/:job_id/cancel", handler.CancelJob)
 		api.GET("/cache/images", handler.ListCachedImages)
 		api.POST("/cache/fetch", handler.FetchImageToCache)
+		api.DELETE("/cache/images/:key", handler.DeleteCachedImage)
 	}
 
 	// Additional provision route for compatibility
@@ -279,6 +281,7 @@ func (h *Handler) ListCachedImages(c *gin.Context) {
 			Path:     img.Path,
 			Size:     img.Size,
 			Checksum: img.Checksum,
+			ModTime:  img.ModTime,
 		}
 	}
 
@@ -345,6 +348,20 @@ func (h *Handler) FetchImageToCache(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, response)
+}
+
+// DeleteCachedImage handles requests to delete a specific cached image by its 64-char hex key
+func (h *Handler) DeleteCachedImage(c *gin.Context) {
+	key := c.Param("key")
+	if len(key) != 64 {
+		c.JSON(http.StatusBadRequest, types.ErrorResponse{Error: "invalid key", Code: 400})
+		return
+	}
+	if err := h.jobManager.DeleteCachedImage(key); err != nil {
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: err.Error(), Code: 500})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted", "key": key})
 }
 
 // HealthCheck provides service health information

@@ -53,28 +53,98 @@ func (j *Job) UpdateProgress(stage string, percent float64, bytesProcessed, byte
 	j.UpdatedAt = time.Now()
 }
 
+// LibvirtPool is the interface Manager uses to interact with the image cache.
+// *libvirt.PoolManager satisfies this interface.
+type LibvirtPool interface {
+	CheckCache(cacheKey string) (*libvirt.ImageCache, error)
+	AllocateImageFile(cacheKey string) (string, error)
+	CreateCacheEntry(imagePath, checksum string) error
+	DeleteImage(imagePath string) error
+	ListCachedImages() ([]*libvirt.ImageCache, error)
+	EvictExpiredImages(maxAge time.Duration) (int, error)
+}
+
 // Manager manages volume provisioning jobs.
 type Manager struct {
 	minioClient *minio.Client
 	jobs        map[string]*Job
 	lvmManager  *lvm.Manager
-	libvirtPool *libvirt.PoolManager
+	libvirtPool LibvirtPool
 	store       *storage.Store
 	semaphore   chan struct{}
 	mu          sync.RWMutex
+	evictCancel context.CancelFunc
 }
 
 // NewManager creates a new job manager.
 func NewManager(minioClient *minio.Client, lvmManager *lvm.Manager,
-	libvirtPool *libvirt.PoolManager, store *storage.Store) *Manager {
-	return &Manager{
+	libvirtPool LibvirtPool, store *storage.Store) *Manager {
+	evictCtx, evictCancel := context.WithCancel(context.Background())
+	m := &Manager{
 		minioClient: minioClient,
 		lvmManager:  lvmManager,
 		libvirtPool: libvirtPool,
 		store:       store,
 		jobs:        make(map[string]*Job),
 		semaphore:   make(chan struct{}, 2), // Max 2 concurrent operations
+		evictCancel: evictCancel,
 	}
+	if libvirtPool != nil {
+		maxAge := parseDurationEnv("CACHE_MAX_AGE", 168*time.Hour)         // 7 days
+		interval := parseDurationEnv("CACHE_EVICTION_INTERVAL", time.Hour) // 1 hour
+		go m.runEvictionLoop(evictCtx, maxAge, interval)
+	}
+	return m
+}
+
+// parseDurationEnv reads a duration from an environment variable, falling back to defaultVal.
+func parseDurationEnv(name string, defaultVal time.Duration) time.Duration {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return defaultVal
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{"env_var": name, "value": raw}).
+			Warn("Invalid duration in env var, using default")
+		return defaultVal
+	}
+	return d
+}
+
+// runEvictionLoop periodically evicts cached images older than maxAge.
+func (m *Manager) runEvictionLoop(ctx context.Context, maxAge, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := m.libvirtPool.EvictExpiredImages(maxAge); err != nil {
+				logrus.WithError(err).Error("Cache eviction sweep failed")
+			}
+		}
+	}
+}
+
+// Stop signals the background eviction goroutine to exit.
+func (m *Manager) Stop() {
+	if m.evictCancel != nil {
+		m.evictCancel()
+	}
+}
+
+// DeleteCachedImage removes a cached image by its cache key.
+func (m *Manager) DeleteCachedImage(cacheKey string) error {
+	imagePath, err := m.libvirtPool.AllocateImageFile(cacheKey)
+	if err != nil {
+		return fmt.Errorf("failed to resolve cache path: %w", err)
+	}
+	if err := m.libvirtPool.DeleteImage(imagePath); err != nil {
+		return fmt.Errorf("failed to delete cached image: %w", err)
+	}
+	return nil
 }
 
 // syncToDatabase persists job state to the database

@@ -6,10 +6,39 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 	"github.com/stretchr/testify/assert"
 )
+
+// mockLibvirtPool implements LibvirtPool for unit tests.
+type mockLibvirtPool struct {
+	listErr      error
+	evictErr     error
+	evictedCount int
+	deletedPaths []string
+}
+
+//nolint:nilnil // matches real CheckCache "not found" semantic
+func (m *mockLibvirtPool) CheckCache(_ string) (*libvirt.ImageCache, error) { return nil, nil }
+func (m *mockLibvirtPool) AllocateImageFile(cacheKey string) (string, error) {
+	return "/tmp/cache/" + cacheKey, nil
+}
+func (m *mockLibvirtPool) CreateCacheEntry(_, _ string) error { return nil }
+func (m *mockLibvirtPool) DeleteImage(imagePath string) error {
+	m.deletedPaths = append(m.deletedPaths, imagePath)
+	return nil
+}
+func (m *mockLibvirtPool) ListCachedImages() ([]*libvirt.ImageCache, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return []*libvirt.ImageCache{}, nil
+}
+func (m *mockLibvirtPool) EvictExpiredImages(_ time.Duration) (int, error) {
+	return m.evictedCount, m.evictErr
+}
 
 // TestJobUpdateProgress tests the progress update functionality
 func TestJobUpdateProgress(t *testing.T) {
@@ -695,6 +724,216 @@ func TestListCachedImages_NoLibvirt(t *testing.T) {
 	images, err := manager.ListCachedImages()
 	assert.Error(t, err)
 	assert.Nil(t, images)
+}
+
+// TestParseDurationEnv tests the parseDurationEnv helper
+func TestParseDurationEnv(t *testing.T) {
+	t.Run("returns default when env var not set", func(t *testing.T) {
+		t.Setenv("TEST_DURATION_UNSET", "")
+		d := parseDurationEnv("TEST_DURATION_UNSET", 5*time.Hour)
+		assert.Equal(t, 5*time.Hour, d)
+	})
+
+	t.Run("returns parsed value when env var is valid", func(t *testing.T) {
+		t.Setenv("TEST_DURATION_VALID", "24h")
+		d := parseDurationEnv("TEST_DURATION_VALID", 5*time.Hour)
+		assert.Equal(t, 24*time.Hour, d)
+	})
+
+	t.Run("returns default when env var is invalid", func(t *testing.T) {
+		t.Setenv("TEST_DURATION_INVALID", "notaduration")
+		d := parseDurationEnv("TEST_DURATION_INVALID", 5*time.Hour)
+		assert.Equal(t, 5*time.Hour, d)
+	})
+}
+
+// TestStop tests that Stop does not panic and signals the eviction goroutine
+func TestStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m := &Manager{
+		jobs:        make(map[string]*Job),
+		semaphore:   make(chan struct{}, 2),
+		evictCancel: cancel,
+	}
+
+	// Should not panic
+	m.Stop()
+
+	// Context should be cancelled
+	select {
+	case <-ctx.Done():
+		// expected
+	default:
+		t.Error("expected context to be cancelled after Stop()")
+	}
+}
+
+// TestStop_NilCancel tests that Stop handles a nil evictCancel gracefully
+func TestStop_NilCancel(t *testing.T) {
+	m := &Manager{
+		jobs:      make(map[string]*Job),
+		semaphore: make(chan struct{}, 2),
+	}
+	// Should not panic
+	m.Stop()
+}
+
+// TestRunEvictionLoop_ContextCancel tests that runEvictionLoop exits when context is cancelled.
+func TestRunEvictionLoop_ContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	pool := &mockLibvirtPool{}
+	m := &Manager{
+		jobs:        make(map[string]*Job),
+		semaphore:   make(chan struct{}, 2),
+		libvirtPool: pool,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		m.runEvictionLoop(ctx, time.Hour, time.Hour) // long interval — only ctx.Done() fires
+		close(done)
+	}()
+
+	cancel()
+
+	select {
+	case <-done:
+		// expected
+	case <-time.After(2 * time.Second):
+		t.Error("runEvictionLoop did not exit after context cancellation")
+	}
+}
+
+// TestRunEvictionLoop_TickerFires tests that runEvictionLoop calls EvictExpiredImages on each tick.
+func TestRunEvictionLoop_TickerFires(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	evictCalled := make(chan struct{}, 1)
+	called := false
+	triggerPool := &callbackLibvirtPool{
+		onEvict: func() (int, error) {
+			if !called {
+				called = true
+				evictCalled <- struct{}{}
+			}
+			return 0, nil
+		},
+	}
+
+	m := &Manager{
+		jobs:        make(map[string]*Job),
+		semaphore:   make(chan struct{}, 2),
+		libvirtPool: triggerPool,
+	}
+
+	go m.runEvictionLoop(ctx, time.Hour, 50*time.Millisecond)
+
+	select {
+	case <-evictCalled:
+		// EvictExpiredImages was called on a tick
+	case <-time.After(2 * time.Second):
+		t.Error("runEvictionLoop did not call EvictExpiredImages on tick")
+	}
+}
+
+// TestRunEvictionLoop_EvictError tests that eviction errors are logged but non-fatal.
+func TestRunEvictionLoop_EvictError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	evictCalled := make(chan struct{}, 1)
+	called := false
+	triggerPool := &callbackLibvirtPool{
+		onEvict: func() (int, error) {
+			if !called {
+				called = true
+				evictCalled <- struct{}{}
+			}
+			return 0, fmt.Errorf("eviction failed")
+		},
+	}
+
+	m := &Manager{
+		jobs:        make(map[string]*Job),
+		semaphore:   make(chan struct{}, 2),
+		libvirtPool: triggerPool,
+	}
+
+	go m.runEvictionLoop(ctx, time.Hour, 50*time.Millisecond)
+
+	select {
+	case <-evictCalled:
+		// error was returned but goroutine kept running (non-fatal)
+	case <-time.After(2 * time.Second):
+		t.Error("runEvictionLoop stopped after eviction error")
+	}
+}
+
+// TestNewManager_StartsEvictionLoop tests that NewManager starts the eviction goroutine when pool is non-nil.
+func TestNewManager_StartsEvictionLoop(t *testing.T) {
+	evictCalled := make(chan struct{}, 1)
+	called := false
+	pool := &callbackLibvirtPool{
+		onEvict: func() (int, error) {
+			if !called {
+				called = true
+				evictCalled <- struct{}{}
+			}
+			return 0, nil
+		},
+	}
+
+	t.Setenv("CACHE_EVICTION_INTERVAL", "50ms")
+	m := NewManager(nil, nil, pool, nil)
+	defer m.Stop()
+
+	select {
+	case <-evictCalled:
+		// eviction goroutine started and fired
+	case <-time.After(2 * time.Second):
+		t.Error("NewManager did not start eviction loop")
+	}
+}
+
+// TestNewManager_NilPool tests that NewManager does not start the eviction goroutine when pool is nil.
+func TestNewManager_NilPool(t *testing.T) {
+	m := NewManager(nil, nil, nil, nil)
+	defer m.Stop()
+	assert.NotNil(t, m)
+	assert.NotNil(t, m.evictCancel)
+}
+
+// TestDeleteCachedImage_Manager tests DeleteCachedImage resolves the path via the pool and deletes it.
+func TestDeleteCachedImage_Manager(t *testing.T) {
+	pool := &mockLibvirtPool{}
+	m := &Manager{
+		jobs:        make(map[string]*Job),
+		semaphore:   make(chan struct{}, 2),
+		libvirtPool: pool,
+	}
+
+	key := "a3b4c5d6e7f8a3b4c5d6e7f8a3b4c5d6e7f8a3b4c5d6e7f8a3b4c5d6e7f8a3b4"
+	err := m.DeleteCachedImage(key)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"/tmp/cache/" + key}, pool.deletedPaths)
+}
+
+// callbackLibvirtPool is a LibvirtPool whose EvictExpiredImages calls a callback.
+type callbackLibvirtPool struct {
+	onEvict func() (int, error)
+}
+
+//nolint:nilnil // matches real CheckCache "not found" semantic
+func (c *callbackLibvirtPool) CheckCache(_ string) (*libvirt.ImageCache, error) { return nil, nil }
+func (c *callbackLibvirtPool) AllocateImageFile(k string) (string, error)       { return "/tmp/" + k, nil }
+func (c *callbackLibvirtPool) CreateCacheEntry(_, _ string) error               { return nil }
+func (c *callbackLibvirtPool) DeleteImage(_ string) error                       { return nil }
+func (c *callbackLibvirtPool) ListCachedImages() ([]*libvirt.ImageCache, error) {
+	return nil, nil
+}
+func (c *callbackLibvirtPool) EvictExpiredImages(_ time.Duration) (int, error) {
+	return c.onEvict()
 }
 
 // TestGetJobCacheInfo tests cache info retrieval
