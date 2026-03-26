@@ -1,5 +1,5 @@
 # Test build stage - includes test dependencies and tools
-FROM golang:1.25.7-alpine AS test-builder
+FROM golang:1.25.8-alpine AS test-builder
 
 # Install test dependencies
 RUN apk add --no-cache \
