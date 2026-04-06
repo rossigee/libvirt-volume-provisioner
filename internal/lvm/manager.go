@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	qcow2reader "github.com/lima-vm/go-qcow2reader"
+	"github.com/lima-vm/go-qcow2reader/image/qcow2"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/retry"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
 	"github.com/sirupsen/logrus"
@@ -227,18 +229,39 @@ func (m *Manager) populateVolumeOnce(
 		"image_type":  imageType,
 	}).Info("Starting volume population")
 
-	// Get image size for rate calculation
-	imageStat, err := os.Stat(imagePath)
-	if err != nil {
-		return fmt.Errorf("failed to stat image file: %w", err)
-	}
-	imageSize := imageStat.Size()
-
 	// Convert image format if needed and copy to LVM volume
 	// For qcow2 images, we use streaming conversion with small buffer to avoid OOM
 	var cmd *exec.Cmd
+	var imageSize int64
 	switch imageType {
 	case "qcow2":
+		// Read virtual size from qcow2 header — this is the uncompressed bytes that
+		// will be written to the block device, not the compressed on-disk file size.
+		if err := func() error {
+			imgFile, err := os.Open(imagePath)
+			if err != nil {
+				return fmt.Errorf("failed to open image file %s: %w", imagePath, err)
+			}
+			defer func() {
+				if err := imgFile.Close(); err != nil {
+					logrus.WithError(err).Warn("failed to close image file after header read")
+				}
+			}()
+			qimg, err := qcow2reader.OpenWithType(imgFile, qcow2.Type)
+			if err != nil {
+				return fmt.Errorf("failed to read qcow2 header from %s: %w", imagePath, err)
+			}
+			defer func() {
+				if err := qimg.Close(); err != nil {
+					logrus.WithError(err).Warn("failed to close qcow2 image after header read")
+				}
+			}()
+			imageSize = qimg.Size()
+			return nil
+		}(); err != nil {
+			return err
+		}
+
 		//nolint:gosec,noctx // Image path is provided by caller, device path is internal
 		cmd = exec.Command("qemu-img", "convert", "-p", "-f", "qcow2", "-O", "raw", imagePath, "-")
 		deviceFile, openErr := os.OpenFile(devicePath, os.O_WRONLY, 0)
@@ -255,6 +278,11 @@ func (m *Manager) populateVolumeOnce(
 		// Direct copy for raw images
 		//nolint:gosec,noctx // Image path is provided by caller, device path is internal
 		cmd = exec.Command("dd", "if="+imagePath, "of="+devicePath, "bs=4M", "status=progress", "conv=fdatasync")
+		rawStat, statErr := os.Stat(imagePath)
+		if statErr != nil {
+			return fmt.Errorf("failed to stat image file: %w", statErr)
+		}
+		imageSize = rawStat.Size()
 	default:
 		return fmt.Errorf("unsupported image type: %s", imageType)
 	}
