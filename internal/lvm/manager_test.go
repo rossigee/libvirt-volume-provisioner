@@ -193,7 +193,7 @@ func TestPopulateVolume(t *testing.T) {
 
 	// Test populating a volume (will fail without LVM tools, but shouldn't panic)
 	assert.NotPanics(t, func() {
-		err := manager.PopulateVolume(context.Background(), "/tmp/test.img", "test-volume", "qcow2", updater)
+		err := manager.PopulateVolume(context.Background(), "/tmp/test.img", "test-volume", "qcow2", updater, nil, "")
 		// Expected to fail in test environment
 		assert.Error(t, err)
 	})

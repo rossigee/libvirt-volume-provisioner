@@ -500,7 +500,9 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 		))
 	defer populateSpan.End()
 
-	if err := m.lvmManager.PopulateVolume(populateCtx, imagePath, req.VolumeName, req.ImageType, job); err != nil {
+	if err := m.lvmManager.PopulateVolume(
+		populateCtx, imagePath, req.VolumeName, req.ImageType, job, m.store, job.ID,
+	); err != nil {
 		populateSpan.RecordError(err)
 		populateSpan.SetStatus(codes.Error, "failed to populate volume")
 		provisionFailed = true

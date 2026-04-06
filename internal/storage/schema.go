@@ -28,6 +28,23 @@ CREATE TABLE IF NOT EXISTS schema_version (
 `
 )
 
+// SchemaV2 adds stage_rates table for progress estimation
+const SchemaV2 = `
+CREATE TABLE IF NOT EXISTS stage_rates (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	stage TEXT NOT NULL,
+	rate_bps REAL NOT NULL,
+	bytes_processed INTEGER NOT NULL,
+	duration_ms INTEGER NOT NULL,
+	job_id TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	FOREIGN KEY (job_id) REFERENCES jobs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stage_rates_stage ON stage_rates(stage);
+CREATE INDEX IF NOT EXISTS idx_stage_rates_created_at ON stage_rates(created_at);
+`
+
 // Migrations represents all available migrations
 var Migrations = []struct {
 	Version int
@@ -36,5 +53,9 @@ var Migrations = []struct {
 	{
 		Version: 1,
 		SQL:     SchemaV1,
+	},
+	{
+		Version: 2,
+		SQL:     SchemaV2,
 	},
 }

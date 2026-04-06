@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-04-07
+
+### Added
+- **Database schema for stage rates**: New `stage_rates` table to store historical performance data for progress estimation.
+- **Rate-based progress estimation**: Collects download and conversion rates, uses historical averages with defaults (300 Mb/s download, 500 Mb/s convert) for accurate ETA reporting.
+
+### Fixed
+- **LVM volume population failure**: `qemu-img convert` failed on block devices with "Cannot grow device files" error. Fixed by streaming output directly to device file using native Go I/O, avoiding device resize issues.
+
+### Changed
+- **Progress reporting**: Now uses estimated completion times based on rate data instead of hardcoded percentages.
+
 ## [0.6.3] - 2026-03-20
 
 ### Fixed
