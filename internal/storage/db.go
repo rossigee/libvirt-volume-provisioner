@@ -389,3 +389,49 @@ func (s *Store) GetJobCount(status string) (int, error) {
 
 	return count, nil
 }
+
+// StageRate represents a measured rate for a stage
+type StageRate struct {
+	ID             int
+	Stage          string
+	RateBPS        float64
+	BytesProcessed int64
+	DurationMS     int64
+	JobID          string
+	CreatedAt      time.Time
+}
+
+// SaveStageRate saves a stage rate measurement
+func (s *Store) SaveStageRate(ctx context.Context, rate StageRate) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO stage_rates (stage, rate_bps, bytes_processed, duration_ms, job_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		rate.Stage, rate.RateBPS, rate.BytesProcessed, rate.DurationMS, rate.JobID, rate.CreatedAt.Unix())
+	if err != nil {
+		return fmt.Errorf("failed to save stage rate: %w", err)
+	}
+	return nil
+}
+
+// GetAverageRate gets the average rate for a stage from recent measurements
+func (s *Store) GetAverageRate(stage string, defaultRate float64) float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var avgRate sql.NullFloat64
+	err := s.db.QueryRowContext(context.Background(),
+		`SELECT AVG(rate_bps) FROM (
+		 SELECT rate_bps FROM stage_rates
+		 WHERE stage = ?
+		 ORDER BY created_at DESC
+		 LIMIT 20
+		)`,
+		stage).Scan(&avgRate)
+	if err != nil || !avgRate.Valid {
+		return defaultRate
+	}
+	return avgRate.Float64
+}

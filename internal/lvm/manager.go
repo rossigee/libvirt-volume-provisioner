@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rossigee/libvirt-volume-provisioner/internal/retry"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -159,6 +160,8 @@ func (m *Manager) PopulateVolume(
 	ctx context.Context,
 	imagePath, volumeName, imageType string,
 	updater ProgressUpdater,
+	store *storage.Store,
+	jobID string,
 ) error {
 	// Start span for LVM volume population
 	tracer := otel.Tracer("libvirt-volume-provisioner")
@@ -171,7 +174,7 @@ func (m *Manager) PopulateVolume(
 
 	// Wrap with retry logic
 	err := retry.WithRetry(ctx, m.retryConfig, func() error {
-		return m.populateVolumeOnce(imagePath, volumeName, imageType, updater)
+		return m.populateVolumeOnce(ctx, imagePath, volumeName, imageType, updater, store, jobID)
 	})
 	if err != nil {
 		span.SetStatus(codes.Error, err.Error())
@@ -182,7 +185,11 @@ func (m *Manager) PopulateVolume(
 }
 
 // populateVolumeOnce performs a single volume population attempt
-func (m *Manager) populateVolumeOnce(imagePath, volumeName, imageType string, updater ProgressUpdater) error {
+func (m *Manager) populateVolumeOnce(
+	ctx context.Context,
+	imagePath, volumeName, imageType string,
+	updater ProgressUpdater, store *storage.Store, jobID string,
+) error {
 	// Get the device path for the LVM volume
 	devicePath := fmt.Sprintf("/dev/%s/%s", m.vgName, volumeName)
 
@@ -220,6 +227,13 @@ func (m *Manager) populateVolumeOnce(imagePath, volumeName, imageType string, up
 		"image_type":  imageType,
 	}).Info("Starting volume population")
 
+	// Get image size for rate calculation
+	imageStat, err := os.Stat(imagePath)
+	if err != nil {
+		return fmt.Errorf("failed to stat image file: %w", err)
+	}
+	imageSize := imageStat.Size()
+
 	// Convert image format if needed and copy to LVM volume
 	// For qcow2 images, we use streaming conversion with small buffer to avoid OOM
 	var cmd *exec.Cmd
@@ -227,9 +241,9 @@ func (m *Manager) populateVolumeOnce(imagePath, volumeName, imageType string, up
 	case "qcow2":
 		//nolint:gosec,noctx // Image path is provided by caller, device path is internal
 		cmd = exec.Command("qemu-img", "convert", "-p", "-f", "qcow2", "-O", "raw", imagePath, "-")
-		deviceFile, err := os.OpenFile(devicePath, os.O_WRONLY, 0)
-		if err != nil {
-			return fmt.Errorf("failed to open device %s: %w", devicePath, err)
+		deviceFile, openErr := os.OpenFile(devicePath, os.O_WRONLY, 0)
+		if openErr != nil {
+			return fmt.Errorf("failed to open device %s: %w", devicePath, openErr)
 		}
 		defer func() {
 			if err := deviceFile.Close(); err != nil {
@@ -251,39 +265,60 @@ func (m *Manager) populateVolumeOnce(imagePath, volumeName, imageType string, up
 		"command":     strings.Join(cmd.Args, " "),
 	}).Info("Executing volume population command")
 
+	// Record start time for rate calculation
+	startTime := time.Now()
+
 	// For qcow2, stdout is already redirected to the device; capture stderr separately.
 	// For other types, use CombinedOutput to capture all output for error reporting.
 	var output []byte
-	var err error
+	var execErr error
 	if cmd.Stdout != nil {
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
-		err = cmd.Run()
+		execErr = cmd.Run()
 		output = stderr.Bytes()
 	} else {
-		output, err = cmd.CombinedOutput()
+		output, execErr = cmd.CombinedOutput()
 	}
-	if err != nil {
+	executionErr := execErr
+	if executionErr != nil {
 		exitCode := -1
 		if cmd.ProcessState != nil {
 			exitCode = cmd.ProcessState.ExitCode()
 		}
 		logrus.WithFields(logrus.Fields{
 			"volume_name": volumeName,
-			"error":       err,
+			"error":       executionErr,
 			"exit_code":   exitCode,
 			"output":      string(output),
 		}).Error("Volume population command failed")
-		return fmt.Errorf("failed to populate LVM volume: %w, output: %s", err, string(output))
+		return fmt.Errorf("failed to populate LVM volume: %w, output: %s", executionErr, string(output))
 	}
 
 	logrus.WithFields(logrus.Fields{
 		"volume_name": volumeName,
 	}).Info("Volume population command completed successfully")
 
+	// Calculate and save rate
+	duration := time.Since(startTime)
+	rateBPS := float64(imageSize) / duration.Seconds()
+	if store != nil {
+		saveErr := store.SaveStageRate(ctx, storage.StageRate{
+			Stage:          "convert",
+			RateBPS:        rateBPS,
+			BytesProcessed: imageSize,
+			DurationMS:     duration.Milliseconds(),
+			JobID:          jobID,
+			CreatedAt:      time.Now(),
+		})
+		if saveErr != nil {
+			logrus.WithError(saveErr).Warn("failed to save stage rate")
+		}
+	}
+
 	// Update progress
 	if updater != nil {
-		updater.UpdateProgress("converting", 95, 0, 0)
+		updater.UpdateProgress("converting", 100, imageSize, imageSize)
 	}
 
 	return nil
