@@ -3,6 +3,7 @@
 package lvm
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -224,10 +225,18 @@ func (m *Manager) populateVolumeOnce(imagePath, volumeName, imageType string, up
 	var cmd *exec.Cmd
 	switch imageType {
 	case "qcow2":
-		// Use streaming conversion with small preallocation and direct output to block device
-		// The key is using -onof_sync=on to write synchronously and -t preallocated for better streaming
 		//nolint:gosec,noctx // Image path is provided by caller, device path is internal
-		cmd = exec.Command("sh", "-c", fmt.Sprintf("qemu-img convert -p -f qcow2 -O raw %s %s", imagePath, devicePath))
+		cmd = exec.Command("qemu-img", "convert", "-p", "-f", "qcow2", "-O", "raw", imagePath, "-")
+		deviceFile, err := os.OpenFile(devicePath, os.O_WRONLY, 0)
+		if err != nil {
+			return fmt.Errorf("failed to open device %s: %w", devicePath, err)
+		}
+		defer func() {
+			if err := deviceFile.Close(); err != nil {
+				logrus.WithError(err).Warn("failed to close device file after population")
+			}
+		}()
+		cmd.Stdout = deviceFile
 	case "raw":
 		// Direct copy for raw images
 		//nolint:gosec,noctx // Image path is provided by caller, device path is internal
@@ -242,7 +251,18 @@ func (m *Manager) populateVolumeOnce(imagePath, volumeName, imageType string, up
 		"command":     strings.Join(cmd.Args, " "),
 	}).Info("Executing volume population command")
 
-	output, err := cmd.CombinedOutput()
+	// For qcow2, stdout is already redirected to the device; capture stderr separately.
+	// For other types, use CombinedOutput to capture all output for error reporting.
+	var output []byte
+	var err error
+	if cmd.Stdout != nil {
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		err = cmd.Run()
+		output = stderr.Bytes()
+	} else {
+		output, err = cmd.CombinedOutput()
+	}
 	if err != nil {
 		exitCode := -1
 		if cmd.ProcessState != nil {
