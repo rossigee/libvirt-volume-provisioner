@@ -15,7 +15,7 @@ BINARY_UNIX=$(BINARY_NAME)_unix
 
 # Debian package parameters
 DEB_NAME=libvirt-volume-provisioner
-DEB_VERSION ?= 0.7.5
+DEB_VERSION ?= 0.7.6
 DEB_ARCH=amd64
 DEB_BUILD_DIR=deb-build
 
@@ -104,20 +104,11 @@ deb: build-linux
 	@echo "" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.timer
 	@echo "[Install]" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.timer
 	@echo "WantedBy=timers.target" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.timer
-	@echo "Description=Libvirt Volume Provisioner" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "After=network.target" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "[Service]" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "Type=simple" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "User=libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "Group=libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "EnvironmentFile=/etc/default/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "ExecStart=/usr/bin/$(BINARY_NAME)" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "Restart=always" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "RestartSec=5" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "[Install]" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
-	@echo "WantedBy=multi-user.target" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
+
+	# Install sudoers rules for unprivileged service user
+	@mkdir -p $(DEB_BUILD_DIR)/etc/sudoers.d
+	cp sudoers.d/libvirt-volume-provisioner $(DEB_BUILD_DIR)/etc/sudoers.d/$(DEB_NAME)
+	@chmod 440 $(DEB_BUILD_DIR)/etc/sudoers.d/$(DEB_NAME)
 
 	# Create postinst script
 	@echo "#!/bin/bash" > $(DEB_BUILD_DIR)/DEBIAN/postinst
