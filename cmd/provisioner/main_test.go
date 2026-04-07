@@ -10,15 +10,8 @@ import (
 )
 
 func TestInitTracing_NoEndpoint(t *testing.T) {
-	// Test when tracing is not configured
-	originalEnabled := os.Getenv("TRACING_ENABLED")
 	originalEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	defer func() {
-		if originalEnabled != "" {
-			_ = os.Setenv("TRACING_ENABLED", originalEnabled)
-		} else {
-			_ = os.Unsetenv("TRACING_ENABLED")
-		}
 		if originalEndpoint != "" {
 			_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint)
 		} else {
@@ -26,8 +19,6 @@ func TestInitTracing_NoEndpoint(t *testing.T) {
 		}
 	}()
 
-	// Ensure tracing is not enabled
-	_ = os.Unsetenv("TRACING_ENABLED")
 	_ = os.Unsetenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 
 	tp, err := initTracing(context.Background())
@@ -37,24 +28,22 @@ func TestInitTracing_NoEndpoint(t *testing.T) {
 }
 
 func TestInitTracing_InvalidConfig(t *testing.T) {
-	// Test with invalid configuration
-	originalEnabled := os.Getenv("TRACING_ENABLED")
 	originalEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	originalExporters := os.Getenv("TRACING_EXPORTERS")
 	defer func() {
-		if originalEnabled != "" {
-			_ = os.Setenv("TRACING_ENABLED", originalEnabled)
-		} else {
-			_ = os.Unsetenv("TRACING_ENABLED")
-		}
 		if originalEndpoint != "" {
 			_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint)
 		} else {
 			_ = os.Unsetenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 		}
+		if originalExporters != "" {
+			_ = os.Setenv("TRACING_EXPORTERS", originalExporters)
+		} else {
+			_ = os.Unsetenv("TRACING_EXPORTERS")
+		}
 	}()
 
-	// Set invalid configuration
-	_ = os.Setenv("TRACING_ENABLED", "true")
+	_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
 	_ = os.Setenv("TRACING_EXPORTERS", "invalid-exporter")
 
 	tp, err := initTracing(context.Background())

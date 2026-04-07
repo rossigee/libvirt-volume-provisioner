@@ -40,13 +40,12 @@ var errOTLPNotConfigured = errors.New("OTLP not configured")
 
 // Build information - set at build time
 var (
-	version   = "v0.7.4"
+	version   = "v0.7.5"
 	buildTime = "unknown"
 )
 
 // TracingConfig holds tracing configuration
 type TracingConfig struct {
-	Enabled        bool
 	SamplingRate   float64
 	Exporters      []string // "otlp", "jaeger", "zipkin"
 	OTLPEndpoint   string
@@ -54,11 +53,16 @@ type TracingConfig struct {
 	ZipkinEndpoint string
 }
 
-// initTracing initializes enhanced tracing with multiple exporters
+// initTracing initializes enhanced tracing with multiple exporters.
+// Tracing is disabled unless OTEL_EXPORTER_OTLP_ENDPOINT is set.
 func initTracing(ctx context.Context) (*sdktrace.TracerProvider, error) {
 	config := TracingConfig{
-		Enabled:      os.Getenv("TRACING_ENABLED") == "true",
+		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		SamplingRate: 1.0, // Default to 100% sampling
+	}
+
+	if config.OTLPEndpoint == "" {
+		return nil, errOTLPNotConfigured
 	}
 
 	// Parse sampling rate
@@ -68,24 +72,14 @@ func initTracing(ctx context.Context) (*sdktrace.TracerProvider, error) {
 		}
 	}
 
-	// Parse exporters
+	// Parse exporters; default to otlp when endpoint is present
 	if exportersStr := os.Getenv("TRACING_EXPORTERS"); exportersStr != "" {
 		config.Exporters = strings.Split(exportersStr, ",")
 		for i, exp := range config.Exporters {
 			config.Exporters[i] = strings.TrimSpace(exp)
 		}
 	} else {
-		// Default to OTLP if endpoint is set
-		config.OTLPEndpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-		if config.OTLPEndpoint != "" {
-			config.Exporters = []string{"otlp"}
-			config.Enabled = true
-		}
-	}
-
-	// Check if tracing is enabled
-	if !config.Enabled && len(config.Exporters) == 0 {
-		return nil, errOTLPNotConfigured
+		config.Exporters = []string{"otlp"}
 	}
 
 	// Create resource
@@ -115,13 +109,6 @@ func initTracing(ctx context.Context) (*sdktrace.TracerProvider, error) {
 		switch strings.ToLower(expType) {
 		case "otlp":
 			endpoint := config.OTLPEndpoint
-			if endpoint == "" {
-				endpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-			}
-			if endpoint == "" {
-				continue
-			}
-
 			if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
 				u, err := url.Parse(endpoint)
 				if err != nil {
