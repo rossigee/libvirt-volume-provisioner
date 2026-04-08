@@ -200,6 +200,13 @@ func (m *Manager) PopulateVolume(
 	return nil
 }
 
+// qcow2ConvertArgs returns the qemu-img arguments to convert a qcow2 image
+// to raw and write it directly to devicePath. Extracted so tests can verify
+// the correct output target is used without running the command.
+func qcow2ConvertArgs(imagePath, devicePath string) []string {
+	return []string{"convert", "-f", "qcow2", "-O", "raw", imagePath, devicePath}
+}
+
 // populateVolumeOnce performs a single volume population attempt
 func (m *Manager) populateVolumeOnce(
 	ctx context.Context,
@@ -274,17 +281,11 @@ func (m *Manager) populateVolumeOnce(
 			return err
 		}
 
-		cmd = sudoCmd("qemu-img", "convert", "-p", "-f", "qcow2", "-O", "raw", imagePath, "-")
-		deviceFile, openErr := os.OpenFile(devicePath, os.O_WRONLY, 0)
-		if openErr != nil {
-			return fmt.Errorf("failed to open device %s: %w", devicePath, openErr)
-		}
-		defer func() {
-			if err := deviceFile.Close(); err != nil {
-				logrus.WithError(err).Warn("failed to close device file after population")
-			}
-		}()
-		cmd.Stdout = deviceFile
+		// Write directly to the device path. Avoid using '-' (stdout) as the output
+		// target: in QEMU ≥10.1.0, stdout-based conversion is broken — '-p' progress
+		// goes to stdout corrupting the stream, and without '-p' qemu-img writes
+		// 0 bytes. Writing directly to the block device path avoids both issues.
+		cmd = sudoCmd("qemu-img", qcow2ConvertArgs(imagePath, devicePath)...)
 	case "raw":
 		// Direct copy for raw images
 		cmd = sudoCmd("dd", "if="+imagePath, "of="+devicePath, "bs=4M", "status=progress", "conv=fdatasync")
@@ -297,28 +298,66 @@ func (m *Manager) populateVolumeOnce(
 		return fmt.Errorf("unsupported image type: %s", imageType)
 	}
 
-	// Execute conversion with progress tracking
+	// Execute conversion with time-based progress tracking.
 	logrus.WithFields(logrus.Fields{
 		"volume_name": volumeName,
 		"command":     strings.Join(cmd.Args, " "),
 	}).Info("Executing volume population command")
 
-	// Record start time for rate calculation
 	startTime := time.Now()
 
-	// For qcow2, stdout is already redirected to the device; capture stderr separately.
-	// For other types, use CombinedOutput to capture all output for error reporting.
-	var output []byte
-	var execErr error
-	if cmd.Stdout != nil {
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		execErr = cmd.Run()
-		output = stderr.Bytes()
-	} else {
-		output, execErr = cmd.CombinedOutput()
+	// Capture stderr for error reporting; for non-qcow2 types also capture stdout.
+	var outBuf bytes.Buffer
+	if cmd.Stdout == nil {
+		cmd.Stdout = &outBuf
 	}
-	executionErr := execErr
+	cmd.Stderr = &outBuf
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start command: %w", err)
+	}
+
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+
+	// Use stored convert rate to estimate duration for incremental progress ticks.
+	// Always apply a default rate so progress updates even on first run with no history.
+	const defaultConvertRate float64 = 200 * 1024 * 1024 // 200 MB/s
+	var estimatedSeconds float64
+
+	// Guard against zero/empty image - no progress to report if there's no data
+	if imageSize > 0 {
+		estimatedSeconds = float64(imageSize) / defaultConvertRate // default estimate
+		if store != nil {
+			if rate := store.GetAverageRate(ctx, "convert", defaultConvertRate); rate > 0 {
+				estimatedSeconds = float64(imageSize) / rate // use historical rate if available
+			}
+		}
+	}
+	// If imageSize is 0 or estimate is somehow invalid, use minimum 1 second
+	if estimatedSeconds <= 0 {
+		estimatedSeconds = 1
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	var executionErr error
+loop:
+	for {
+		select {
+		case executionErr = <-waitDone:
+			break loop
+		case <-ticker.C:
+			if updater != nil {
+				elapsed := time.Since(startTime).Seconds()
+				pct := min(elapsed/estimatedSeconds*100, 99.0)
+				updater.UpdateProgress("converting", pct, int64(float64(imageSize)*pct/100), imageSize)
+			}
+		}
+	}
+
+	output := outBuf.Bytes()
 	if executionErr != nil {
 		exitCode := -1
 		if cmd.ProcessState != nil {
@@ -337,7 +376,7 @@ func (m *Manager) populateVolumeOnce(
 		"volume_name": volumeName,
 	}).Info("Volume population command completed successfully")
 
-	// Calculate and save rate
+	// Calculate and save rate.
 	duration := time.Since(startTime)
 	rateBPS := float64(imageSize) / duration.Seconds()
 	if store != nil {
@@ -354,7 +393,6 @@ func (m *Manager) populateVolumeOnce(
 		}
 	}
 
-	// Update progress
 	if updater != nil {
 		updater.UpdateProgress("converting", 100, imageSize, imageSize)
 	}

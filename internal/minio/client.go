@@ -277,8 +277,8 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 			now := time.Now()
 			if updater != nil && totalSize > 0 &&
 				(now.Sub(lastUpdate) > 500*time.Millisecond || downloaded%(16*1024*1024) == 0) {
-				percent := float64(downloaded) / float64(totalSize) * 30 // 30% of total progress
-				updater.UpdateProgress("downloading", 10+percent, downloaded, totalSize)
+				percent := float64(downloaded) / float64(totalSize) * 100
+				updater.UpdateProgress("downloading", percent, downloaded, totalSize)
 				lastUpdate = now
 			}
 		}
@@ -293,7 +293,7 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 
 	// Final progress update
 	if updater != nil && totalSize > 0 {
-		updater.UpdateProgress("downloading", 40, downloaded, totalSize)
+		updater.UpdateProgress("downloading", 100, downloaded, totalSize)
 	}
 
 	// Verify download
@@ -373,8 +373,8 @@ func (c *Client) downloadImageOnce(ctx context.Context, imageURL string, updater
 
 			// Update progress
 			if updater != nil && totalSize > 0 {
-				percent := float64(downloaded) / float64(totalSize) * 30 // 30% of total progress
-				updater.UpdateProgress("downloading", 10+percent, downloaded, totalSize)
+				percent := float64(downloaded) / float64(totalSize) * 100
+				updater.UpdateProgress("downloading", percent, downloaded, totalSize)
 			}
 		}
 

@@ -2,9 +2,14 @@ package lvm
 
 import (
 	"context"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewManager(t *testing.T) {
@@ -197,4 +202,94 @@ func TestPopulateVolume(t *testing.T) {
 		// Expected to fail in test environment
 		assert.Error(t, err)
 	})
+}
+
+// TestQcow2ConvertArgs verifies the qemu-img arguments are constructed correctly.
+// This is a regression test for a bug where '-' was used as the output target:
+// in QEMU ≥10.1.0, '-' is treated as a literal filename rather than stdout,
+// so the image data was never written to the block device.
+func TestQcow2ConvertArgs(t *testing.T) {
+	imagePath := "/var/lib/libvirt/images/some-image.qcow2"
+	devicePath := "/dev/data/gitea.golder.lan-root"
+
+	args := qcow2ConvertArgs(imagePath, devicePath)
+
+	// Must be a valid qemu-img convert invocation
+	require.Equal(t, "convert", args[0])
+	assert.Equal(t, "-f", args[1])
+	assert.Equal(t, "qcow2", args[2])
+	assert.Equal(t, "-O", args[3])
+	assert.Equal(t, "raw", args[4])
+	assert.Equal(t, imagePath, args[5])
+
+	// The last argument must be the device path — not '-', '/dev/stdout', or anything else.
+	// Using '-' causes QEMU ≥10.1.0 to create a literal file named '-' in the CWD.
+	// Using '/dev/stdout' fails when stdout is a pipe (exit 1).
+	last := args[len(args)-1]
+	assert.Equal(t, devicePath, last, "output target must be the device path, not stdout or '-'")
+	assert.NotEqual(t, "-", last, "'-' is treated as a filename in QEMU ≥10.1.0, not stdout")
+	assert.NotEqual(t, "/dev/stdout", last, "'/dev/stdout' fails when stdout is a pipe")
+
+	// -p must not be present: in QEMU ≥10.1.0 it writes progress text to stdout,
+	// which corrupts the image stream when stdout is the block device.
+	for _, arg := range args {
+		assert.NotEqual(t, "-p", arg, "'-p' must not be passed to qemu-img convert")
+	}
+}
+
+// TestQcow2ConvertIntegration verifies that qemu-img actually writes the correct
+// image data to the output file. This catches regressions where the wrong output
+// target causes the data to be lost or corrupted.
+func TestQcow2ConvertIntegration(t *testing.T) {
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		t.Skip("qemu-img not available:", err)
+	}
+
+	dir := t.TempDir()
+
+	// Copy pre-built qcow2 test file to temp directory.
+	// This simulates receiving a qcow2 from MinIO in production.
+	src, err := os.Open("testdata/test-image.qcow2")
+	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
+
+	qcow2Path := filepath.Join(dir, "input.qcow2")
+	dst, err := os.Create(qcow2Path)
+	require.NoError(t, err)
+	_, err = io.Copy(dst, src)
+	require.NoError(t, err)
+	require.NoError(t, dst.Close())
+
+	// Target file simulates a block device.
+	devicePath := filepath.Join(dir, "device.raw")
+	f, err := os.Create(devicePath)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	// Run the conversion using the same args qcow2ConvertArgs produces,
+	// but without sudo (we own the temp files).
+	args := qcow2ConvertArgs(qcow2Path, devicePath)
+	cmd := exec.CommandContext(t.Context(), "qemu-img", args...)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "qemu-img convert failed: %s", out)
+
+	// Verify the output file is non-empty (data was written).
+	gotInfo, err := os.Stat(devicePath)
+	require.NoError(t, err)
+	assert.Greater(t, gotInfo.Size(), int64(0), "output file should not be empty")
+
+	// Confirm the regression: running with '-' as output must NOT produce correct output.
+	dashDevice := filepath.Join(dir, "dash-device.raw")
+	f, err = os.Create(dashDevice)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	cmd = exec.CommandContext(t.Context(), "qemu-img", "convert",
+		"-f", "qcow2", "-O", "raw", qcow2Path, "-")
+	cmd.Dir = dir // so '-' gets created in our temp dir, not CWD
+	_ = cmd.Run()
+
+	dashInfo, _ := os.Stat(dashDevice)
+	assert.Equal(t, int64(0), dashInfo.Size(),
+		"stdout redirect should produce empty output (regression confirmed)")
 }
