@@ -150,6 +150,7 @@ deb: build-linux
 	@echo "# Set permissions" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "chown libvirt-volume-provisioner:libvirt-volume-provisioner /usr/bin/$(BINARY_NAME)" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "chmod 755 /usr/bin/$(BINARY_NAME)" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "chown root:root /etc/sudoers.d/$(DEB_NAME)" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "# Reload systemd and enable service" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "systemctl daemon-reload" >> $(DEB_BUILD_DIR)/DEBIAN/postinst

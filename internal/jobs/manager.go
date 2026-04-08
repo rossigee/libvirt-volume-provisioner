@@ -19,6 +19,7 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/internal/lvm"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/minio"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/timing"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel"
@@ -29,24 +30,37 @@ import (
 
 // Job represents a volume provisioning job.
 type Job struct {
-	ID            string
-	CorrelationID string
-	Status        types.JobStatus
-	Request       types.ProvisionRequest
-	Progress      *types.ProgressInfo
-	Error         error
-	CacheHit      bool
-	ImagePath     string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	cancelFunc    context.CancelFunc
+	ID             string
+	CorrelationID  string
+	Status         types.JobStatus
+	Request        types.ProvisionRequest
+	Progress       *types.ProgressInfo
+	Error          error
+	CacheHit       bool
+	ImagePath      string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	cancelFunc     context.CancelFunc
+	downloadWeight float64 // fraction of total job time estimated for the download stage (0–1)
+	convertWeight  float64 // fraction of total job time estimated for the convert stage (0–1)
 }
 
 // UpdateProgress implements the ProgressUpdater interface.
-func (j *Job) UpdateProgress(stage string, percent float64, bytesProcessed, bytesTotal int64) {
+// stagePercent is 0–100 within the named stage; it is mapped to an overall job
+// percentage using rate-based weights set before the stages begin.
+func (j *Job) UpdateProgress(stage string, stagePercent float64, bytesProcessed, bytesTotal int64) {
+	var overall float64
+	switch stage {
+	case "downloading":
+		overall = stagePercent * j.downloadWeight
+	case "converting":
+		overall = j.downloadWeight*100 + stagePercent*j.convertWeight
+	default:
+		overall = stagePercent
+	}
 	j.Progress = &types.ProgressInfo{
 		Stage:          stage,
-		Percent:        percent,
+		Percent:        overall,
 		BytesProcessed: bytesProcessed,
 		BytesTotal:     bytesTotal,
 	}
@@ -419,16 +433,28 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	volumeCreated := false
 	provisionFailed := false
 
-	// Update progress
-	job.Progress = &types.ProgressInfo{
-		Stage:   "initializing",
-		Percent: 0,
+	// Get historical rates to estimate stage weights dynamically
+	downloadRate := m.store.GetAverageRate(ctx, "download", timing.DefaultDownloadRate)
+	convertRate := m.store.GetAverageRate(ctx, "convert", timing.DefaultConvertRate)
+	estimator := timing.NewEstimator(downloadRate, convertRate)
+
+	// Estimate weights based on image sizes - download size from request, convert size
+	// estimated from qcow2 virtual size (for qcow2) or raw file size
+	var downloadSize, convertSize int64
+	if req.ImageType == "qcow2" {
+		// Will be determined after download - use estimate based on request
+		// For qcow2, we estimate virtual size based on volume size or use default
+		downloadSize = int64(req.VolumeSizeGB) * 1024 * 1024 * 1024
+	} else {
+		downloadSize = int64(req.VolumeSizeGB) * 1024 * 1024 * 1024
 	}
+	convertSize = downloadSize // assume same order of magnitude
+
+	job.downloadWeight, job.convertWeight = estimator.EstimateWeights(downloadSize, convertSize)
+
+	job.UpdateProgress("initializing", 0, 0, 0)
 
 	// Step 1: Check image cache or download
-	job.Progress.Stage = "checking_cache"
-	job.Progress.Percent = 5
-
 	// Create span for image acquisition
 	imageCtx, imageSpan := tracer.Start(ctx, "getOrDownloadImage",
 		trace.WithAttributes(
@@ -446,9 +472,14 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	imageSpan.SetAttributes(attribute.String("image.path", imagePath))
 	imageSpan.SetStatus(codes.Ok, "image acquired successfully")
 
+	// If the image was served from cache there was no download phase, so the full
+	// progress range belongs to the convert stage.
+	if job.CacheHit {
+		job.downloadWeight = 0
+		job.convertWeight = 1
+	}
+
 	// Step 2: Create LVM volume
-	job.Progress.Stage = "creating_volume"
-	job.Progress.Percent = 45
 
 	// Create span for volume creation
 	volumeCtx, volumeSpan := tracer.Start(ctx, "createVolume",
@@ -488,9 +519,6 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	}()
 
 	// Step 3: Convert and populate volume
-	job.Progress.Stage = "converting"
-	job.Progress.Percent = 55
-
 	// Create span for volume population
 	populateCtx, populateSpan := tracer.Start(ctx, "populateVolume",
 		trace.WithAttributes(
@@ -511,8 +539,7 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	populateSpan.SetStatus(codes.Ok, "volume populated successfully")
 
 	// Step 4: Finalize
-	job.Progress.Stage = "finalizing"
-	job.Progress.Percent = 100
+	job.UpdateProgress("finalizing", 100, 0, 0)
 
 	return nil
 }
@@ -655,8 +682,7 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 	allocSpan.SetStatus(codes.Ok, "cache file allocated")
 	allocSpan.End()
 
-	job.Progress.Stage = "downloading"
-	job.Progress.Percent = 10
+	job.UpdateProgress("downloading", 0, 0, 0)
 
 	select {
 	case <-ctx.Done():
@@ -669,9 +695,22 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 		logrus.WithField("job_id", job.ID).Info("Starting download with valid context")
 	}
 
+	downloadStart := time.Now()
 	if err := m.minioClient.DownloadImageToPath(ctx, req.ImageURL, imagePath, job); err != nil {
 		_ = m.libvirtPool.DeleteImage(imagePath)
 		return "", fmt.Errorf("failed to download image: %w", err)
+	}
+	if downloadDuration := time.Since(downloadStart); downloadDuration > 0 {
+		if stat, err := os.Stat(imagePath); err == nil {
+			_ = m.store.SaveStageRate(ctx, storage.StageRate{
+				Stage:          "download",
+				RateBPS:        float64(stat.Size()) / downloadDuration.Seconds(),
+				BytesProcessed: stat.Size(),
+				DurationMS:     downloadDuration.Milliseconds(),
+				JobID:          job.ID,
+				CreatedAt:      time.Now(),
+			})
+		}
 	}
 
 	// Compute checksum of the downloaded image and store it as the cache entry.
