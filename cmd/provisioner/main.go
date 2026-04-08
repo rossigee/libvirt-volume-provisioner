@@ -40,7 +40,7 @@ var errOTLPNotConfigured = errors.New("OTLP not configured")
 
 // Build information - set at build time
 var (
-	version   = "v0.7.6"
+	version   = "v0.8.0"
 	buildTime = "unknown"
 )
 

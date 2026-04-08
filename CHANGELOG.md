@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-04-09
+
+### Added
+- **Timing package**: New `internal/timing` package with `Estimator` and `MovingAverage` for calculating stage weights and progress based on data transfer rates.
+- **Dynamic progress weight estimation**: Stage weights (download vs convert split) are now calculated dynamically based on historical rates and image sizes, replacing the static 50/50 split.
+- **Stage timing metrics**: New Prometheus metrics:
+  - `libvirt_volume_provisioner_stage_duration_seconds` - histogram for download/convert stage durations
+  - `libvirt_volume_provisioner_stage_throughput_bytes_per_second` - gauge for current throughput per stage
+
+### Fixed
+- **Stuck progress at 55%**: Progress reporting now works on first run with no historical data by using default rates (100 MB/s download, 200 MB/s convert).
+- **qemu-img convert output**: Confirmed correct output target is device path, not stdout (test coverage added).
+
+### Changed
+- **Default rates**: Updated to 100 MB/s download, 200 MB/s convert (was 300/500 MB/s).
+- **Progress algorithm**: Uses `timing.Estimator` for weight calculation and time-based progress ticks during convert stage.
+
 ## [0.7.3] - 2026-04-07
 
 ### Added

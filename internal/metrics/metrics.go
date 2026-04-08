@@ -34,6 +34,10 @@ type Metrics struct {
 	StorageOperations *prometheus.CounterVec
 	StorageErrors     *prometheus.CounterVec
 
+	// Stage timing metrics
+	StageDuration   *prometheus.HistogramVec
+	StageThroughput *prometheus.GaugeVec
+
 	// Health metrics
 	HealthStatus   prometheus.Gauge
 	DependenciesUp *prometheus.GaugeVec
@@ -153,6 +157,24 @@ func NewMetrics() *Metrics {
 			[]string{"operation", "error_type"},
 		),
 
+		// Stage timing metrics
+		StageDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "libvirt_volume_provisioner_stage_duration_seconds",
+				Help:    "Stage execution duration in seconds",
+				Buckets: []float64{0.1, 0.5, 1, 5, 10, 30, 60, 120, 300, 600},
+			},
+			[]string{"stage"},
+		),
+
+		StageThroughput: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "libvirt_volume_provisioner_stage_throughput_bytes_per_second",
+				Help: "Stage throughput in bytes per second (moving average)",
+			},
+			[]string{"stage"},
+		),
+
 		// Health metrics
 		HealthStatus: prometheus.NewGauge(
 			prometheus.GaugeOpts{
@@ -185,6 +207,8 @@ func NewMetrics() *Metrics {
 		m.ImageErrors,
 		m.StorageOperations,
 		m.StorageErrors,
+		m.StageDuration,
+		m.StageThroughput,
 		m.HealthStatus,
 		m.DependenciesUp,
 	)
@@ -291,5 +315,19 @@ func (m *Metrics) UpdateDependencyStatus(dependency string, up bool) {
 		} else {
 			m.DependenciesUp.WithLabelValues(dependency).Set(0)
 		}
+	}
+}
+
+// RecordStageDuration records the duration of a stage (download/convert)
+func (m *Metrics) RecordStageDuration(stage string, durationSeconds float64) {
+	if m.StageDuration != nil {
+		m.StageDuration.WithLabelValues(stage).Observe(durationSeconds)
+	}
+}
+
+// UpdateStageThroughput updates the throughput gauge for a stage
+func (m *Metrics) UpdateStageThroughput(stage string, bytesPerSecond float64) {
+	if m.StageThroughput != nil {
+		m.StageThroughput.WithLabelValues(stage).Set(bytesPerSecond)
 	}
 }

@@ -87,7 +87,44 @@ Prometheus-compatible metrics endpoint.
 - `libvirt_volume_provisioner_jobs_total` - Total jobs by status (started, completed, failed, cancelled)
 - `libvirt_volume_provisioner_active_jobs` - Currently active provisioning jobs
 - `libvirt_volume_provisioner_job_duration_seconds` - Job duration histogram
+- `libvirt_volume_provisioner_stage_duration_seconds` - Download/convert stage duration histogram
+- `libvirt_volume_provisioner_stage_throughput_bytes_per_second` - Current throughput per stage (moving average)
 - Go runtime metrics (gc_duration_seconds, go_goroutines, go_memory_usage)
+
+**Stage Timing Metrics:**
+
+The provisioner tracks performance of individual job stages:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `stage_duration_seconds` | histogram | Time for download/convert stages |
+| `stage_throughput_bytes_per_second` | gauge | Current throughput (labels: `download`, `convert`) |
+
+Query average stage durations:
+```promql
+# Average download time
+rate(libvirt_volume_provisioner_stage_duration_seconds_sum{stage="download"}[5m]) / rate(libvirt_volume_provisioner_stage_duration_seconds_count{stage="download"}[5m])
+
+# Average convert time
+rate(libvirt_volume_provisioner_stage_duration_seconds_sum{stage="convert"}[5m]) / rate(libvirt_volume_provisioner_stage_duration_seconds_count{stage="convert"}[5m])
+
+# Current throughput
+libvirt_volume_provisioner_stage_throughput_bytes_per_second
+```
+
+**Progress Reporting:**
+
+Job progress is reported as percentage (0-100%) and includes:
+- **Stage**: Current stage (`initializing`, `downloading`, `converting`, `finalizing`)
+- **Percent**: Overall job completion percentage
+- **BytesProcessed/BytesTotal**: Transfer progress
+
+The progress split between download and convert stages is dynamically estimated based on:
+1. Historical stage durations from the database (last 20 measurements)
+2. Default rates: 100 MB/s download, 200 MB/s convert
+3. Image size (for qcow2, uses virtual size from header)
+
+For cache hits, the download stage is skipped and convert spans the full 0-100% range.
 
 ### Prometheus ServiceMonitor (Kubernetes)
 
