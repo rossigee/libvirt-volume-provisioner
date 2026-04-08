@@ -40,41 +40,91 @@ func (m *mockLibvirtPool) EvictExpiredImages(_ time.Duration) (int, error) {
 	return m.evictedCount, m.evictErr
 }
 
-// TestJobUpdateProgress tests the progress update functionality
+// TestJobUpdateProgress tests the weighted progress mapping in UpdateProgress.
+// downloadWeight and convertWeight are fractions (0–1) that together sum to 1.
+// "downloading" maps stagePercent into [0, downloadWeight*100].
+// "converting"  maps stagePercent into [downloadWeight*100, 100].
+// All other stages pass stagePercent through unchanged.
 func TestJobUpdateProgress(t *testing.T) {
 	job := &Job{
-		ID: "test-job",
-		Request: types.ProvisionRequest{
-			ImageURL:     "http://example.com/image.qcow2",
-			VolumeName:   "test-volume",
-			VolumeSizeGB: 10,
-			ImageType:    "qcow2",
-		},
+		ID:             "test-job",
+		downloadWeight: 0.6,
+		convertWeight:  0.4,
 	}
 
-	// Test that progress can be updated
-	job.UpdateProgress("initializing", 25.0, 256, 1024)
+	// Default stage: overall == stagePercent unchanged.
+	job.UpdateProgress("initializing", 0, 0, 0)
+	assert.NotNil(t, job.Progress)
+	assert.Equal(t, "initializing", job.Progress.Stage)
+	assert.Equal(t, 0.0, job.Progress.Percent)
 
-	if job.Progress == nil {
-		t.Error("Expected progress to be set")
-		return
+	// Download start: 0% of stage → 0% overall.
+	job.UpdateProgress("downloading", 0, 0, 1024)
+	assert.Equal(t, "downloading", job.Progress.Stage)
+	assert.InDelta(t, 0.0, job.Progress.Percent, 0.001)
+
+	// Download mid: 50% of stage → 30% overall (50 * 0.6).
+	job.UpdateProgress("downloading", 50.0, 512, 1024)
+	assert.InDelta(t, 30.0, job.Progress.Percent, 0.001)
+	assert.Equal(t, int64(512), job.Progress.BytesProcessed)
+	assert.Equal(t, int64(1024), job.Progress.BytesTotal)
+
+	// Download complete: 100% of stage → 60% overall (100 * 0.6).
+	job.UpdateProgress("downloading", 100.0, 1024, 1024)
+	assert.InDelta(t, 60.0, job.Progress.Percent, 0.001)
+
+	// Convert start: 0% of stage → 60% overall (downloadWeight*100 + 0*0.4).
+	job.UpdateProgress("converting", 0, 0, 1024)
+	assert.Equal(t, "converting", job.Progress.Stage)
+	assert.InDelta(t, 60.0, job.Progress.Percent, 0.001)
+
+	// Convert mid: 50% of stage → 80% overall (60 + 50*0.4).
+	job.UpdateProgress("converting", 50.0, 512, 1024)
+	assert.InDelta(t, 80.0, job.Progress.Percent, 0.001)
+
+	// Convert complete: 100% of stage → 100% overall (60 + 100*0.4).
+	job.UpdateProgress("converting", 100.0, 1024, 1024)
+	assert.InDelta(t, 100.0, job.Progress.Percent, 0.001)
+
+	// Finalizing (default): 100 passed through unchanged.
+	job.UpdateProgress("finalizing", 100.0, 0, 0)
+	assert.Equal(t, "finalizing", job.Progress.Stage)
+	assert.Equal(t, 100.0, job.Progress.Percent)
+}
+
+// TestJobUpdateProgress_CacheHit verifies that when downloadWeight=0 and
+// convertWeight=1 (set after a cache hit), converting spans the full 0–100% range.
+func TestJobUpdateProgress_CacheHit(t *testing.T) {
+	job := &Job{
+		ID:             "test-job",
+		downloadWeight: 0,
+		convertWeight:  1,
 	}
 
-	if job.Progress.Stage != "initializing" {
-		t.Errorf("Expected stage 'initializing', got '%s'", job.Progress.Stage)
+	job.UpdateProgress("converting", 0, 0, 1024)
+	assert.InDelta(t, 0.0, job.Progress.Percent, 0.001)
+
+	job.UpdateProgress("converting", 50.0, 512, 1024)
+	assert.InDelta(t, 50.0, job.Progress.Percent, 0.001)
+
+	job.UpdateProgress("converting", 100.0, 1024, 1024)
+	assert.InDelta(t, 100.0, job.Progress.Percent, 0.001)
+}
+
+// TestJobUpdateProgress_EqualWeights verifies the 50/50 fallback used when no
+// rate history is available.
+func TestJobUpdateProgress_EqualWeights(t *testing.T) {
+	job := &Job{
+		ID:             "test-job",
+		downloadWeight: 0.5,
+		convertWeight:  0.5,
 	}
 
-	if job.Progress.Percent != 25.0 {
-		t.Errorf("Expected percent 25.0, got %f", job.Progress.Percent)
-	}
+	job.UpdateProgress("downloading", 100.0, 1024, 1024)
+	assert.InDelta(t, 50.0, job.Progress.Percent, 0.001)
 
-	if job.Progress.BytesProcessed != 256 {
-		t.Errorf("Expected bytes processed 256, got %d", job.Progress.BytesProcessed)
-	}
-
-	if job.Progress.BytesTotal != 1024 {
-		t.Errorf("Expected bytes total 1024, got %d", job.Progress.BytesTotal)
-	}
+	job.UpdateProgress("converting", 100.0, 1024, 1024)
+	assert.InDelta(t, 100.0, job.Progress.Percent, 0.001)
 }
 
 // TestJobStatusInitialization tests that jobs are initialized with correct default values
