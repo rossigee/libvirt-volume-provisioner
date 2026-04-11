@@ -43,28 +43,68 @@ type Job struct {
 	cancelFunc     context.CancelFunc
 	downloadWeight float64 // fraction of total job time estimated for the download stage (0–1)
 	convertWeight  float64 // fraction of total job time estimated for the convert stage (0–1)
+	currentStage   string  // track current stage for ETA calculation
+	stageStartTime time.Time
 }
 
 // UpdateProgress implements the ProgressUpdater interface.
-// stagePercent is 0–100 within the named stage; it is mapped to an overall job
-// percentage using rate-based weights set before the stages begin.
+// stagePercent is 0–100 within the named stage; we report independent stage progress
+// with overall ETA calculated based on historical rates.
 func (j *Job) UpdateProgress(stage string, stagePercent float64, bytesProcessed, bytesTotal int64) {
-	var overall float64
+	now := time.Now()
+
+	// Detect stage change and reset stage timer
+	if j.currentStage != stage {
+		j.currentStage = stage
+		j.stageStartTime = now
+	}
+
+	// Calculate stage ETA based on current progress rate
+	var stageETA *int64
+	if stagePercent > 0 && stagePercent < 100 {
+		elapsedSec := now.Sub(j.stageStartTime).Seconds()
+		if elapsedSec > 0 {
+			// Estimate: (elapsed / percent_done) * percent_remaining
+			remainingPercent := 100 - stagePercent
+			etaSec := int64((elapsedSec / stagePercent) * remainingPercent)
+			stageETA = &etaSec
+		}
+	}
+
+	// Calculate overall progress and ETA
+	var overallPercent float64
+	var overallETA *int64
 	switch stage {
 	case "downloading":
-		overall = stagePercent * j.downloadWeight
+		overallPercent = stagePercent * j.downloadWeight
+		// Overall ETA = download stage ETA + estimated convert time
+		if stageETA != nil {
+			convertSec := int64(float64(*stageETA) * (j.convertWeight / j.downloadWeight))
+			totalETA := *stageETA + convertSec
+			overallETA = &totalETA
+		}
 	case "converting":
-		overall = j.downloadWeight*100 + stagePercent*j.convertWeight
+		overallPercent = j.downloadWeight*100 + stagePercent*j.convertWeight
+		// Overall ETA = convert stage ETA
+		if stageETA != nil {
+			overallETA = stageETA
+		}
 	default:
-		overall = stagePercent
+		overallPercent = stagePercent
 	}
+
 	j.Progress = &types.ProgressInfo{
 		Stage:          stage,
-		Percent:        overall,
+		StagePercent:   stagePercent,
+		OverallPercent: overallPercent,
 		BytesProcessed: bytesProcessed,
 		BytesTotal:     bytesTotal,
+		ETASec:         stageETA,
+		OverallETASec:  overallETA,
+		StageStartTime: j.stageStartTime,
+		JobStartTime:   j.CreatedAt,
 	}
-	j.UpdatedAt = time.Now()
+	j.UpdatedAt = now
 }
 
 // LibvirtPool is the interface Manager uses to interact with the image cache.
@@ -438,17 +478,17 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	convertRate := m.store.GetAverageRate(ctx, "convert", timing.DefaultConvertRate)
 	estimator := timing.NewEstimator(downloadRate, convertRate)
 
-	// Estimate weights based on image sizes - download size from request, convert size
-	// estimated from qcow2 virtual size (for qcow2) or raw file size
+	// Estimate weights based on image sizes.
+	// For qcow2: download is compressed file (~20% of raw), convert writes full volume.
+	// For raw: download and convert are the same size.
 	var downloadSize, convertSize int64
+	convertSize = int64(req.VolumeSizeGB) * 1024 * 1024 * 1024
 	if req.ImageType == "qcow2" {
-		// Will be determined after download - use estimate based on request
-		// For qcow2, we estimate virtual size based on volume size or use default
-		downloadSize = int64(req.VolumeSizeGB) * 1024 * 1024 * 1024
+		// qcow2 files are typically compressed to ~20% of raw size
+		downloadSize = convertSize / 5
 	} else {
-		downloadSize = int64(req.VolumeSizeGB) * 1024 * 1024 * 1024
+		downloadSize = convertSize
 	}
-	convertSize = downloadSize // assume same order of magnitude
 
 	job.downloadWeight, job.convertWeight = estimator.EstimateWeights(downloadSize, convertSize)
 
@@ -820,7 +860,7 @@ func (m *Manager) FetchImageToCache(ctx context.Context, req types.FetchImageToC
 		ID:        jobID,
 		Status:    types.StatusPending,
 		Request:   types.ProvisionRequest{ImageURL: req.ImageURL}, // Wrap in ProvisionRequest for compatibility
-		Progress:  &types.ProgressInfo{Stage: "pending", Percent: 0},
+		Progress:  &types.ProgressInfo{Stage: "initializing", StagePercent: 0, OverallPercent: 0},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}

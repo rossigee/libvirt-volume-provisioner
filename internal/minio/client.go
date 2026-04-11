@@ -208,6 +208,11 @@ func (c *Client) DownloadImageToPath(ctx context.Context, imageURL, destPath str
 // without retry logic
 func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath string,
 	updater ProgressUpdater) error {
+	// Report connecting stage
+	if updater != nil {
+		updater.UpdateProgress("connecting", 0, 0, 0)
+	}
+
 	// Parse the image URL to extract bucket and object
 	u, err := url.Parse(imageURL)
 	if err != nil {
@@ -222,6 +227,11 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 
 	bucketName := pathParts[0]
 	objectName := strings.Join(pathParts[1:], "/")
+
+	// Report fetching metadata stage
+	if updater != nil {
+		updater.UpdateProgress("connecting", 50, 0, 0)
+	}
 
 	// Get object info for size
 	objInfo, err := c.minioClient.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
@@ -245,6 +255,11 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 		_ = destFile.Close() // Close errors are not critical
 	}()
 
+	// Report starting download
+	if updater != nil {
+		updater.UpdateProgress("downloading", 0, 0, totalSize)
+	}
+
 	// Download object with progress tracking
 	object, err := c.minioClient.GetObject(ctx, bucketName, objectName, minio.GetObjectOptions{})
 	if err != nil {
@@ -258,6 +273,10 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 	buffer := make([]byte, 4*1024*1024) // 4MB buffer for more frequent updates
 	var downloaded int64
 	lastUpdate := time.Now()
+	lastPercent := 0.0
+	bytesSinceUpdate := int64(0)
+	const minUpdateBytes = 1 * 1024 * 1024           // Update at least every 1MB
+	const minUpdateInterval = 200 * time.Millisecond // Update at least every 200ms
 
 	for {
 		select {
@@ -272,14 +291,23 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 				return fmt.Errorf("failed to write to destination file: %w", writeErr)
 			}
 			downloaded += int64(n)
+			bytesSinceUpdate += int64(n)
 
-			// Update progress more frequently (every 4MB or every 500ms)
+			// Update progress frequently for smooth percentage increments
 			now := time.Now()
-			if updater != nil && totalSize > 0 &&
-				(now.Sub(lastUpdate) > 500*time.Millisecond || downloaded%(16*1024*1024) == 0) {
-				percent := float64(downloaded) / float64(totalSize) * 100
-				updater.UpdateProgress("downloading", percent, downloaded, totalSize)
+			elapsed := now.Sub(lastUpdate)
+			currentPercent := float64(downloaded) / float64(totalSize) * 100
+
+			// Update if: enough time passed OR enough bytes transferred OR percentage changed by 0.5%+
+			shouldUpdate := updater != nil && totalSize > 0 && (elapsed > minUpdateInterval ||
+				bytesSinceUpdate >= minUpdateBytes ||
+				currentPercent-lastPercent >= 0.5)
+
+			if shouldUpdate {
+				updater.UpdateProgress("downloading", currentPercent, downloaded, totalSize)
 				lastUpdate = now
+				bytesSinceUpdate = 0
+				lastPercent = currentPercent
 			}
 		}
 

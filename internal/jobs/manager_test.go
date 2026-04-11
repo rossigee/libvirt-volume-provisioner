@@ -56,40 +56,40 @@ func TestJobUpdateProgress(t *testing.T) {
 	job.UpdateProgress("initializing", 0, 0, 0)
 	assert.NotNil(t, job.Progress)
 	assert.Equal(t, "initializing", job.Progress.Stage)
-	assert.Equal(t, 0.0, job.Progress.Percent)
+	assert.Equal(t, 0.0, job.Progress.OverallPercent)
 
 	// Download start: 0% of stage → 0% overall.
 	job.UpdateProgress("downloading", 0, 0, 1024)
 	assert.Equal(t, "downloading", job.Progress.Stage)
-	assert.InDelta(t, 0.0, job.Progress.Percent, 0.001)
+	assert.InDelta(t, 0.0, job.Progress.OverallPercent, 0.001)
 
 	// Download mid: 50% of stage → 30% overall (50 * 0.6).
 	job.UpdateProgress("downloading", 50.0, 512, 1024)
-	assert.InDelta(t, 30.0, job.Progress.Percent, 0.001)
+	assert.InDelta(t, 30.0, job.Progress.OverallPercent, 0.001)
 	assert.Equal(t, int64(512), job.Progress.BytesProcessed)
 	assert.Equal(t, int64(1024), job.Progress.BytesTotal)
 
 	// Download complete: 100% of stage → 60% overall (100 * 0.6).
 	job.UpdateProgress("downloading", 100.0, 1024, 1024)
-	assert.InDelta(t, 60.0, job.Progress.Percent, 0.001)
+	assert.InDelta(t, 60.0, job.Progress.OverallPercent, 0.001)
 
 	// Convert start: 0% of stage → 60% overall (downloadWeight*100 + 0*0.4).
 	job.UpdateProgress("converting", 0, 0, 1024)
 	assert.Equal(t, "converting", job.Progress.Stage)
-	assert.InDelta(t, 60.0, job.Progress.Percent, 0.001)
+	assert.InDelta(t, 60.0, job.Progress.OverallPercent, 0.001)
 
 	// Convert mid: 50% of stage → 80% overall (60 + 50*0.4).
 	job.UpdateProgress("converting", 50.0, 512, 1024)
-	assert.InDelta(t, 80.0, job.Progress.Percent, 0.001)
+	assert.InDelta(t, 80.0, job.Progress.OverallPercent, 0.001)
 
 	// Convert complete: 100% of stage → 100% overall (60 + 100*0.4).
 	job.UpdateProgress("converting", 100.0, 1024, 1024)
-	assert.InDelta(t, 100.0, job.Progress.Percent, 0.001)
+	assert.InDelta(t, 100.0, job.Progress.OverallPercent, 0.001)
 
 	// Finalizing (default): 100 passed through unchanged.
 	job.UpdateProgress("finalizing", 100.0, 0, 0)
 	assert.Equal(t, "finalizing", job.Progress.Stage)
-	assert.Equal(t, 100.0, job.Progress.Percent)
+	assert.Equal(t, 100.0, job.Progress.OverallPercent)
 }
 
 // TestJobUpdateProgress_CacheHit verifies that when downloadWeight=0 and
@@ -102,13 +102,13 @@ func TestJobUpdateProgress_CacheHit(t *testing.T) {
 	}
 
 	job.UpdateProgress("converting", 0, 0, 1024)
-	assert.InDelta(t, 0.0, job.Progress.Percent, 0.001)
+	assert.InDelta(t, 0.0, job.Progress.OverallPercent, 0.001)
 
 	job.UpdateProgress("converting", 50.0, 512, 1024)
-	assert.InDelta(t, 50.0, job.Progress.Percent, 0.001)
+	assert.InDelta(t, 50.0, job.Progress.OverallPercent, 0.001)
 
 	job.UpdateProgress("converting", 100.0, 1024, 1024)
-	assert.InDelta(t, 100.0, job.Progress.Percent, 0.001)
+	assert.InDelta(t, 100.0, job.Progress.OverallPercent, 0.001)
 }
 
 // TestJobUpdateProgress_EqualWeights verifies the 50/50 fallback used when no
@@ -121,10 +121,10 @@ func TestJobUpdateProgress_EqualWeights(t *testing.T) {
 	}
 
 	job.UpdateProgress("downloading", 100.0, 1024, 1024)
-	assert.InDelta(t, 50.0, job.Progress.Percent, 0.001)
+	assert.InDelta(t, 50.0, job.Progress.OverallPercent, 0.001)
 
 	job.UpdateProgress("converting", 100.0, 1024, 1024)
-	assert.InDelta(t, 100.0, job.Progress.Percent, 0.001)
+	assert.InDelta(t, 100.0, job.Progress.OverallPercent, 0.001)
 }
 
 // TestJobStatusInitialization tests that jobs are initialized with correct default values
@@ -366,7 +366,8 @@ func TestGetJobStatus(t *testing.T) {
 		},
 		Progress: &types.ProgressInfo{
 			Stage:          "completed",
-			Percent:        100.0,
+			StagePercent:   100.0,
+			OverallPercent: 100.0,
 			BytesProcessed: 1024,
 			BytesTotal:     1024,
 		},

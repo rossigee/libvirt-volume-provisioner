@@ -23,21 +23,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// sudoCmd wraps a command with 'sudo -n' so the service can run as an
-// unprivileged user while still executing LVM and block-device operations.
-// The -n flag prevents sudo from prompting for a password.
-//
-//nolint:noctx // context-aware callers should use sudoCmdContext instead
-func sudoCmd(name string, args ...string) *exec.Cmd {
-	//nolint:gosec // arguments are validated by callers
-	return exec.Command("sudo", append([]string{"-n", name}, args...)...)
-}
-
-// sudoCmdContext is the context-aware equivalent of sudoCmd.
-func sudoCmdContext(ctx context.Context, name string, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, "sudo", append([]string{"-n", name}, args...)...)
-}
-
+// v0.9: sudoCmd removed - using direct exec.Command
 // ProgressUpdater interface for updating job progress
 type ProgressUpdater interface {
 	UpdateProgress(stage string, percent float64, bytesProcessed, bytesTotal int64)
@@ -63,7 +49,7 @@ func NewManager(vgName string) (*Manager, error) {
 	}
 
 	// Verify the volume group exists
-	cmd := sudoCmdContext(context.Background(), "vgs", vgName)
+	cmd := exec.CommandContext(context.Background(), "vgs", vgName)
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("volume group '%s' does not exist or is not accessible: %w", vgName, err)
 	}
@@ -162,7 +148,7 @@ func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB in
 // createVolumeOnce performs a single LVM volume creation attempt
 func (m *Manager) createVolumeOnce(volumeName string, sizeGB int) error {
 	// Create LVM volume
-	cmd := sudoCmd("lvcreate", "-L", fmt.Sprintf("%dG", sizeGB), "-n", volumeName, m.vgName)
+	cmd := exec.CommandContext(context.Background(), "lvcreate", "-L", fmt.Sprintf("%dG", sizeGB), "-n", volumeName, m.vgName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create LVM volume: %w, output: %s", err, string(output))
@@ -217,12 +203,12 @@ func (m *Manager) populateVolumeOnce(
 	devicePath := fmt.Sprintf("/dev/%s/%s", m.vgName, volumeName)
 
 	// Verify the device exists
-	if _, err := sudoCmd("test", "-b", devicePath).CombinedOutput(); err != nil {
+	if _, err := exec.CommandContext(context.Background(), "test", "-b", devicePath).CombinedOutput(); err != nil {
 		return fmt.Errorf("LVM volume device does not exist: %s", devicePath)
 	}
 
 	// Check if volume already has content by looking for filesystem
-	blkidCmd := sudoCmd("blkid", "-o", "value", "-s", "TYPE", devicePath)
+	blkidCmd := exec.CommandContext(context.Background(), "blkid", "-o", "value", "-s", "TYPE", devicePath)
 	blkidOutput, blkidErr := blkidCmd.Output()
 
 	// If blkid finds a filesystem, the volume has content
@@ -285,10 +271,10 @@ func (m *Manager) populateVolumeOnce(
 		// target: in QEMU ≥10.1.0, stdout-based conversion is broken — '-p' progress
 		// goes to stdout corrupting the stream, and without '-p' qemu-img writes
 		// 0 bytes. Writing directly to the block device path avoids both issues.
-		cmd = sudoCmd("qemu-img", qcow2ConvertArgs(imagePath, devicePath)...)
+		cmd = exec.CommandContext(context.Background(), "qemu-img", qcow2ConvertArgs(imagePath, devicePath)...)
 	case "raw":
 		// Direct copy for raw images
-		cmd = sudoCmd("dd", "if="+imagePath, "of="+devicePath, "bs=4M", "status=progress", "conv=fdatasync")
+		cmd = exec.CommandContext(context.Background(), "dd", "if="+imagePath, "of="+devicePath, "bs=4M", "status=progress", "conv=fdatasync")
 		rawStat, statErr := os.Stat(imagePath)
 		if statErr != nil {
 			return fmt.Errorf("failed to stat image file: %w", statErr)
@@ -321,8 +307,8 @@ func (m *Manager) populateVolumeOnce(
 	go func() { waitDone <- cmd.Wait() }()
 
 	// Use stored convert rate to estimate duration for incremental progress ticks.
-	// Always apply a default rate so progress updates even on first run with no history.
-	const defaultConvertRate float64 = 200 * 1024 * 1024 // 200 MB/s
+	// Use conservative 50 MB/s default (SSD write speed for large sequential writes)
+	const defaultConvertRate float64 = 50 * 1024 * 1024 // 50 MB/s
 	var estimatedSeconds float64
 
 	// Guard against zero/empty image - no progress to report if there's no data
@@ -339,7 +325,14 @@ func (m *Manager) populateVolumeOnce(
 		estimatedSeconds = 1
 	}
 
-	ticker := time.NewTicker(2 * time.Second)
+	logrus.WithFields(logrus.Fields{
+		"volume_name":   volumeName,
+		"image_size":    imageSize,
+		"estimated_sec": estimatedSeconds,
+		"default_rate":  defaultConvertRate,
+	}).Info("Starting volume conversion with progress tracking")
+
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	var executionErr error
@@ -352,7 +345,17 @@ loop:
 			if updater != nil {
 				elapsed := time.Since(startTime).Seconds()
 				pct := min(elapsed/estimatedSeconds*100, 99.0)
-				updater.UpdateProgress("converting", pct, int64(float64(imageSize)*pct/100), imageSize)
+				processed := int64(float64(imageSize) * pct / 100)
+				// Log progress at INFO level every 5 seconds to diagnose 0% issue
+				if int(elapsed)%5 == 0 {
+					logrus.WithFields(logrus.Fields{
+						"elapsed_sec":   elapsed,
+						"estimated_sec": estimatedSeconds,
+						"percent":       pct,
+						"image_size":    imageSize,
+					}).Info("Convert progress debug")
+				}
+				updater.UpdateProgress("converting", pct, processed, imageSize)
 			}
 		}
 	}
@@ -414,7 +417,7 @@ func (m *Manager) DeleteVolume(volumeName string) error {
 		return fmt.Errorf("volume %s does not exist", volumeName)
 	}
 
-	cmd := sudoCmd("lvremove", "-f", fmt.Sprintf("%s/%s", m.vgName, volumeName))
+	cmd := exec.CommandContext(context.Background(), "lvremove", "-f", fmt.Sprintf("%s/%s", m.vgName, volumeName))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
@@ -437,7 +440,7 @@ func (m *Manager) GetVolumeInfo(volumeName string) (*VolumeInfo, error) {
 	}
 
 	fullPath := fmt.Sprintf("%s/%s", m.vgName, volumeName)
-	cmd := sudoCmd("lvs", "--units", "b", "--noheadings", "-o", "lv_name,lv_size,lv_attr", fullPath)
+	cmd := exec.CommandContext(context.Background(), "lvs", "--units", "b", "--noheadings", "-o", "lv_name,lv_size,lv_attr", fullPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get volume info: %w, output: %s", err, string(output))
@@ -464,7 +467,7 @@ func (m *Manager) GetVolumeInfo(volumeName string) (*VolumeInfo, error) {
 
 // ListVolumes returns a list of all LVM volumes in the volume group
 func (m *Manager) ListVolumes() ([]string, error) {
-	cmd := sudoCmd("lvs", "--noheadings", "-o", "lv_name", m.vgName)
+	cmd := exec.CommandContext(context.Background(), "lvs", "--noheadings", "-o", "lv_name", m.vgName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list volumes: %w, output: %s", err, string(output))
@@ -483,7 +486,7 @@ func (m *Manager) ListVolumes() ([]string, error) {
 
 // volumeExists checks if an LVM volume exists
 func (m *Manager) volumeExists(volumeName string) bool {
-	cmd := sudoCmd("lvs", fmt.Sprintf("%s/%s", m.vgName, volumeName))
+	cmd := exec.CommandContext(context.Background(), "lvs", fmt.Sprintf("%s/%s", m.vgName, volumeName))
 	return cmd.Run() == nil
 }
 

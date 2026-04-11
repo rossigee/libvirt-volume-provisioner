@@ -39,12 +39,15 @@ const (
 
 // ProgressInfo represents progress information for a job.
 type ProgressInfo struct {
-	Stage          string    `json:"stage"`
-	Percent        float64   `json:"percent"`
+	Stage          string    `json:"stage"`           // Current stage name (downloading, converting, etc.)
+	StagePercent   float64   `json:"stage_percent"`   // 0-100 within current stage
+	OverallPercent float64   `json:"overall_percent"` // 0-100 overall job progress
 	BytesProcessed int64     `json:"bytes_processed"`
 	BytesTotal     int64     `json:"bytes_total"`
-	ETASec         *int64    `json:"eta_sec,omitempty"` // Estimated seconds remaining
-	StartTime      time.Time `json:"-"`                 // Not serialized, used for ETA calculation
+	ETASec         *int64    `json:"eta_sec,omitempty"`         // Estimated seconds remaining for current stage
+	OverallETASec  *int64    `json:"overall_eta_sec,omitempty"` // Estimated seconds remaining for entire job
+	StageStartTime time.Time `json:"-"`                         // When current stage started
+	JobStartTime   time.Time `json:"-"`                         // When job started
 }
 
 // StatusResponse represents the response to a status query.
