@@ -1,5 +1,15 @@
 # Deployment
 
+## Requirements for New Hosts
+
+When deploying to new hypervisors, ensure:
+
+1. `libvirt-volume-provisioner` user added to `libvirt` group: `sudo usermod -aG libvirt libvirt-volume-provisioner`
+2. TLS certificates: `root:libvirt-volume-provisioner` ownership, `440` permissions
+3. Environment file: `root:libvirt-volume-provisioner` ownership, `640` permissions
+
+See [Installation](../installation.md) for full details.
+
 This guide covers continuous integration, release processes, and deployment strategies.
 
 ## Continuous Integration

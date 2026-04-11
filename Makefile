@@ -15,7 +15,7 @@ BINARY_UNIX=$(BINARY_NAME)_unix
 
 # Debian package parameters
 DEB_NAME=libvirt-volume-provisioner
-DEB_VERSION ?= 0.7.6
+DEB_VERSION ?= 0.9.0
 DEB_ARCH=amd64
 DEB_BUILD_DIR=deb-build
 
@@ -34,7 +34,7 @@ build:
 
 # Build for Linux
 build-linux:
-	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 $(GOBUILD) -ldflags "-X main.version=$(DEB_VERSION) -X 'main.buildTime=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")'" -o $(BINARY_UNIX) -v ./$(MAIN_PACKAGE)
+	CGO_ENABLED=1 CGO_CFLAGS="-Wno-discarded-qualifiers" GOOS=linux GOARCH=amd64 $(GOBUILD) -tags libsqlite3 -ldflags "-X main.version=$(DEB_VERSION) -X 'main.buildTime=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")'" -o $(BINARY_UNIX) -v ./$(MAIN_PACKAGE)
 
 # Test
 test:
@@ -106,9 +106,7 @@ deb: build-linux
 	@echo "WantedBy=timers.target" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.timer
 
 	# Install sudoers rules for unprivileged service user
-	@mkdir -p $(DEB_BUILD_DIR)/etc/sudoers.d
-	cp sudoers.d/libvirt-volume-provisioner $(DEB_BUILD_DIR)/etc/sudoers.d/$(DEB_NAME)
-	@chmod 440 $(DEB_BUILD_DIR)/etc/sudoers.d/$(DEB_NAME)
+	# Removed sudoers for v0.9 direct exec
 
 	# Create postinst script
 	@echo "#!/bin/bash" > $(DEB_BUILD_DIR)/DEBIAN/postinst
@@ -150,7 +148,7 @@ deb: build-linux
 	@echo "# Set permissions" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "chown libvirt-volume-provisioner:libvirt-volume-provisioner /usr/bin/$(BINARY_NAME)" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "chmod 755 /usr/bin/$(BINARY_NAME)" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "chown root:root /etc/sudoers.d/$(DEB_NAME)" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "	# No sudoers for v0.9" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "# Reload systemd and enable service" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "systemctl daemon-reload" >> $(DEB_BUILD_DIR)/DEBIAN/postinst

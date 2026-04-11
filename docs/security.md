@@ -116,17 +116,26 @@ chmod 600 /var/lib/libvirt-volume-provisioner/jobs.db
 Ensure proper permissions on all configuration files:
 
 ```bash
+# Add user to libvirt group for access
+sudo usermod -aG libvirt libvirt-volume-provisioner
+
 # Configuration directory
 sudo chmod 700 /etc/libvirt-volume-provisioner
 sudo chown libvirt-volume-provisioner:libvirt-volume-provisioner /etc/libvirt-volume-provisioner
 
-# Certificate files
-sudo chmod 600 /etc/libvirt-volume-provisioner/server.key
-sudo chmod 644 /etc/libvirt-volume-provisioner/server.crt
+# Certificate files: root:libvirt-volume-provisioner 440
+sudo chown root:libvirt-volume-provisioner /etc/libvirt-volume-provisioner/*.crt /etc/libvirt-volume-provisioner/*.key
+sudo chmod 440 /etc/libvirt-volume-provisioner/*.crt /etc/libvirt-volume-provisioner/*.key
+
+# Environment file: root:libvirt-volume-provisioner 640
+sudo chown root:libvirt-volume-provisioner /etc/default/libvirt-volume-provisioner
+sudo chmod 640 /etc/default/libvirt-volume-provisioner
 
 # API tokens file
 sudo chmod 600 /etc/libvirt-volume-provisioner/tokens
 ```
+
+**Note**: `NoNewPrivileges=true` is currently disabled due to sudo wrapper usage. Planned removal in v0.9.x for direct exec.
 
 ### Systemd Security
 

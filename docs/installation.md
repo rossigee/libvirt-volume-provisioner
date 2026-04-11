@@ -219,9 +219,28 @@ sudo apt update
 sudo apt install libvirt-volume-provisioner
 ```
 
-## Verification
+## Deployment Requirements for New Hosts
 
-After installation, verify the service is running:
+When deploying to new hypervisors, ensure these fixes are applied:
+1. **User groups**: Add `libvirt-volume-provisioner` user to `libvirt` group:
+   ```bash
+   sudo usermod -aG libvirt libvirt-volume-provisioner
+   ```
+2. **TLS certificates**: Ownership `root:libvirt-volume-provisioner` with permissions `440`:
+   ```bash
+   sudo chown root:libvirt-volume-provisioner /etc/libvirt-volume-provisioner/*.crt /etc/libvirt-volume-provisioner/*.key
+   sudo chmod 440 /etc/libvirt-volume-provisioner/*.crt /etc/libvirt-volume-provisioner/*.key
+   ```
+3. **Environment file**: Ownership `root:libvirt-volume-provisioner` with permissions `640`:
+   ```bash
+   sudo chown root:libvirt-volume-provisioner /etc/default/libvirt-volume-provisioner
+   sudo chmod 640 /etc/default/libvirt-volume-provisioner
+   ```
+
+**Long-term Recommendation**: Remove the sudo wrapper in v0.9.x and revert to direct exec like v0.7.0 to re-enable `NoNewPrivileges=true` for better security. Current v0.8.1 + unprivileged user config is stable.
+
+## Verification
+After installation and configuration, verify the service is running:
 
 ```bash
 # Check service status
@@ -234,4 +253,5 @@ ss -tlnp | grep 8080
 curl https://hypervisor.example.com:8080/health \
   --insecure  # For testing only; use proper certificates in production
 ```
+
 
