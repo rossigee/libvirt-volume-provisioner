@@ -546,7 +546,7 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 				"volume_name": req.VolumeName,
 			}).Warn("Rolling back: deleting failed volume")
 
-			if deleteErr := m.lvmManager.DeleteVolume(req.VolumeName); deleteErr != nil {
+			if deleteErr := m.lvmManager.DeleteVolume(volumeCtx, req.VolumeName); deleteErr != nil {
 				logrus.WithError(deleteErr).WithFields(logrus.Fields{
 					"job_id":      job.ID,
 					"volume_name": req.VolumeName,

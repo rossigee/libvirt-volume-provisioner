@@ -106,7 +106,7 @@ func TestVolumeExists(t *testing.T) {
 	// Test with a volume name
 	// This tests that the method doesn't panic
 	assert.NotPanics(t, func() {
-		exists := manager.volumeExists("test-volume")
+		exists := manager.volumeExists(context.Background(), "test-volume")
 		// We can't really test the actual command execution in unit tests
 		// without LVM tools, but we can test that it returns a bool
 		assert.IsType(t, false, exists)
@@ -122,7 +122,7 @@ func TestValidateExistingVolume(t *testing.T) {
 	// Test with volume name that would be valid
 	// This tests the method signature and basic logic
 	assert.NotPanics(t, func() {
-		_ = manager.validateExistingVolume("test-volume", 10)
+		_ = manager.validateExistingVolume(context.Background(), "test-volume", 10)
 	})
 }
 
@@ -134,7 +134,7 @@ func TestDeleteVolume(t *testing.T) {
 
 	// Test deleting a volume that doesn't exist (should not panic)
 	assert.NotPanics(t, func() {
-		err := manager.DeleteVolume("nonexistent-volume")
+		err := manager.DeleteVolume(context.Background(), "nonexistent-volume")
 		// We expect this to fail in a real environment, but shouldn't panic
 		assert.Error(t, err)
 	})
@@ -167,7 +167,7 @@ func TestGetVolumeInfo(t *testing.T) {
 
 	// Test getting volume info for non-existent volume
 	assert.NotPanics(t, func() {
-		info, err := manager.GetVolumeInfo("nonexistent-volume")
+		info, err := manager.GetVolumeInfo(context.Background(), "nonexistent-volume")
 		// Should return an error for non-existent volume
 		assert.Error(t, err)
 		assert.Nil(t, info)
