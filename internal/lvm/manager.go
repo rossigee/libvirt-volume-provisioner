@@ -119,9 +119,9 @@ func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB in
 	defer span.End()
 
 	// Check if volume already exists
-	if m.volumeExists(volumeName) {
+	if m.volumeExists(ctx, volumeName) {
 		// Validate existing volume
-		if err := m.validateExistingVolume(volumeName, sizeGB); err != nil {
+		if err := m.validateExistingVolume(ctx, volumeName, sizeGB); err != nil {
 			span.SetStatus(codes.Error, err.Error())
 			return fmt.Errorf("existing volume %s is incompatible: %w", volumeName, err)
 		}
@@ -135,7 +135,7 @@ func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB in
 
 	// Create new volume
 	err := retry.WithRetry(ctx, m.retryConfig, func() error {
-		return m.createVolumeOnce(volumeName, sizeGB)
+		return m.createVolumeOnce(ctx, volumeName, sizeGB)
 	})
 	if err != nil {
 		span.SetStatus(codes.Error, err.Error())
@@ -146,9 +146,11 @@ func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB in
 }
 
 // createVolumeOnce performs a single LVM volume creation attempt
-func (m *Manager) createVolumeOnce(volumeName string, sizeGB int) error {
+func (m *Manager) createVolumeOnce(ctx context.Context, volumeName string, sizeGB int) error {
 	// Create LVM volume
-	cmd := exec.CommandContext(context.Background(), "lvcreate", "-L", fmt.Sprintf("%dG", sizeGB), "-n", volumeName, m.vgName)
+	cmd := exec.CommandContext(ctx, "lvcreate",
+		"-L", fmt.Sprintf("%dG", sizeGB),
+		"-n", volumeName, m.vgName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create LVM volume: %w, output: %s", err, string(output))
@@ -203,12 +205,12 @@ func (m *Manager) populateVolumeOnce(
 	devicePath := fmt.Sprintf("/dev/%s/%s", m.vgName, volumeName)
 
 	// Verify the device exists
-	if _, err := exec.CommandContext(context.Background(), "test", "-b", devicePath).CombinedOutput(); err != nil {
+	if _, err := exec.CommandContext(ctx, "test", "-b", devicePath).CombinedOutput(); err != nil {
 		return fmt.Errorf("LVM volume device does not exist: %s", devicePath)
 	}
 
 	// Check if volume already has content by looking for filesystem
-	blkidCmd := exec.CommandContext(context.Background(), "blkid", "-o", "value", "-s", "TYPE", devicePath)
+	blkidCmd := exec.CommandContext(ctx, "blkid", "-o", "value", "-s", "TYPE", devicePath)
 	blkidOutput, blkidErr := blkidCmd.Output()
 
 	// If blkid finds a filesystem, the volume has content
@@ -271,10 +273,10 @@ func (m *Manager) populateVolumeOnce(
 		// target: in QEMU ≥10.1.0, stdout-based conversion is broken — '-p' progress
 		// goes to stdout corrupting the stream, and without '-p' qemu-img writes
 		// 0 bytes. Writing directly to the block device path avoids both issues.
-		cmd = exec.CommandContext(context.Background(), "qemu-img", qcow2ConvertArgs(imagePath, devicePath)...)
+		cmd = exec.CommandContext(ctx, "qemu-img", qcow2ConvertArgs(imagePath, devicePath)...)
 	case "raw":
 		// Direct copy for raw images
-		cmd = exec.CommandContext(context.Background(), "dd", "if="+imagePath, "of="+devicePath, "bs=4M", "status=progress", "conv=fdatasync")
+		cmd = exec.CommandContext(ctx, "dd", "if="+imagePath, "of="+devicePath, "bs=4M", "status=progress", "conv=fdatasync")
 		rawStat, statErr := os.Stat(imagePath)
 		if statErr != nil {
 			return fmt.Errorf("failed to stat image file: %w", statErr)
@@ -404,20 +406,20 @@ loop:
 }
 
 // DeleteVolume deletes an LVM volume
-func (m *Manager) DeleteVolume(volumeName string) error {
+func (m *Manager) DeleteVolume(ctx context.Context, volumeName string) error {
 	// Start span for LVM volume deletion
-	_, span := otel.Tracer("libvirt-volume-provisioner").Start(context.Background(), "DeleteVolume",
+	_, span := otel.Tracer("libvirt-volume-provisioner").Start(ctx, "DeleteVolume",
 		trace.WithAttributes(
 			attribute.String("lvm.volume_name", volumeName),
 			attribute.String("lvm.vg_name", m.vgName)))
 	defer span.End()
 
-	if !m.volumeExists(volumeName) {
+	if !m.volumeExists(ctx, volumeName) {
 		span.SetStatus(codes.Error, "volume does not exist")
 		return fmt.Errorf("volume %s does not exist", volumeName)
 	}
 
-	cmd := exec.CommandContext(context.Background(), "lvremove", "-f", fmt.Sprintf("%s/%s", m.vgName, volumeName))
+	cmd := exec.CommandContext(ctx, "lvremove", "-f", fmt.Sprintf("%s/%s", m.vgName, volumeName))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
@@ -434,13 +436,14 @@ func (m *Manager) DeleteVolume(volumeName string) error {
 }
 
 // GetVolumeInfo returns information about an LVM volume
-func (m *Manager) GetVolumeInfo(volumeName string) (*VolumeInfo, error) {
-	if !m.volumeExists(volumeName) {
+func (m *Manager) GetVolumeInfo(ctx context.Context, volumeName string) (*VolumeInfo, error) {
+	if !m.volumeExists(ctx, volumeName) {
 		return nil, fmt.Errorf("volume %s does not exist", volumeName)
 	}
 
 	fullPath := fmt.Sprintf("%s/%s", m.vgName, volumeName)
-	cmd := exec.CommandContext(context.Background(), "lvs", "--units", "b", "--noheadings", "-o", "lv_name,lv_size,lv_attr", fullPath)
+	cmd := exec.CommandContext(ctx, "lvs", "--units", "b", "--noheadings",
+		"-o", "lv_name,lv_size,lv_attr", fullPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get volume info: %w, output: %s", err, string(output))
@@ -485,14 +488,14 @@ func (m *Manager) ListVolumes() ([]string, error) {
 }
 
 // volumeExists checks if an LVM volume exists
-func (m *Manager) volumeExists(volumeName string) bool {
-	cmd := exec.CommandContext(context.Background(), "lvs", fmt.Sprintf("%s/%s", m.vgName, volumeName))
+func (m *Manager) volumeExists(ctx context.Context, volumeName string) bool {
+	cmd := exec.CommandContext(ctx, "lvs", fmt.Sprintf("%s/%s", m.vgName, volumeName))
 	return cmd.Run() == nil
 }
 
 // validateExistingVolume checks if an existing volume is compatible for reuse
-func (m *Manager) validateExistingVolume(volumeName string, requiredSizeGB int) error {
-	info, err := m.GetVolumeInfo(volumeName)
+func (m *Manager) validateExistingVolume(ctx context.Context, volumeName string, requiredSizeGB int) error {
+	info, err := m.GetVolumeInfo(ctx, volumeName)
 	if err != nil {
 		return fmt.Errorf("failed to get volume info: %w", err)
 	}
