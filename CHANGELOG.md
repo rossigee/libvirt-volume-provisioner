@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-04-28
+
+### Security
+- **TLS hardening**: Removed `InsecureSkipVerify` from MinIO client; custom CA supported via `MINIO_CA_CERT`
+- **mTLS**: Fixed peer certificate auth to use `c.Request.TLS.PeerCertificates` (was never functional)
+- **Token comparison**: Replaced string equality with `crypto/subtle.ConstantTimeCompare` to prevent timing attacks
+- **Default CA removed**: System CA bundle (`/etc/ssl/certs/ca-certificates.crt`) no longer used as default `CLIENT_CA_CERT`; an unconfigured CA now means mTLS is disabled, not open to any public-CA cert
+- **Token file**: Missing or empty `API_TOKENS_FILE` is now a fatal startup error (removed hardcoded `dev-token-12345` fallback)
+- **Path traversal**: Cache keys validated as 64-character lowercase hex before constructing file paths
+
+### Fixed
+- **Data races**: Per-`Job` `sync.RWMutex` added; all field reads/writes are now lock-protected
+- **Background context**: Provisioning and cache jobs now use `context.WithTimeout(context.Background(), 30m)` instead of the HTTP request context, which was cancelled on response
+- **Job cleanup ordering**: `CleanupCompletedJobs` now deletes oldest entries first (was random map iteration)
+- **Health check threshold**: Degraded state now triggers at `active_jobs >= 2` (max capacity), not `> 2`
+- **LVM device check**: Uses `os.Stat` instead of shell-out; bounds-checked `Attributes[4]` access
+- **SQL error**: `sql.ErrNoRows` comparison now uses `errors.Is`
+- **Metrics wiring**: All declared metrics are now instrumented — `health_status`, `dependencies_up`, `active_jobs`, `job_duration`, `jobs_total`, `cache_hits/misses`, `image_download_size`, `stage_duration` were previously defined but never updated
+- **Health uptime**: Response field now reports real elapsed time instead of `"unknown"`
+
+### Removed
+- Dead code: `DownloadImage`/`downloadImageOnce` (MinIO), `AllocateImage`, `GetImageNameFromURL` (pool)
+- Duplicate Prometheus global registry registration in `handlers.go`
+- Duplicate error log block in Loki hook `sendLogs`
+
+### Changed
+- Go toolchain updated to 1.26.2 (go.mod and Docker builder images)
+- All Makefile targets now have `##` help comments and complete `.PHONY` declaration
+
 ## [0.8.1] - 2026-04-09
 
 ### Fixed

@@ -19,9 +19,14 @@ curl https://hypervisor.example.com:8080/health \
 
 ```json
 {
-  "status": "healthy"
+  "status": "healthy",
+  "timestamp": "2026-04-28T09:00:00Z",
+  "version": "v0.10.0",
+  "uptime": "3h14m52s"
 }
 ```
+
+Returns `"status": "degraded"` when all job slots are occupied (max 2 concurrent jobs).
 
 ### GET /healthz
 
@@ -82,14 +87,25 @@ Prometheus-compatible metrics endpoint.
 
 **Available Metrics:**
 
-- `libvirt_volume_provisioner_requests_total` - Total HTTP requests by endpoint/method/status
-- `libvirt_volume_provisioner_requests_duration_seconds` - Request latency histogram
-- `libvirt_volume_provisioner_jobs_total` - Total jobs by status (started, completed, failed, cancelled)
-- `libvirt_volume_provisioner_active_jobs` - Currently active provisioning jobs
-- `libvirt_volume_provisioner_job_duration_seconds` - Job duration histogram
-- `libvirt_volume_provisioner_stage_duration_seconds` - Download/convert stage duration histogram
-- `libvirt_volume_provisioner_stage_throughput_bytes_per_second` - Current throughput per stage (moving average)
-- Go runtime metrics (gc_duration_seconds, go_goroutines, go_memory_usage)
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `libvirt_volume_provisioner_requests_total` | counter | method, endpoint, status | Total HTTP requests |
+| `libvirt_volume_provisioner_request_duration_seconds` | histogram | method, endpoint | HTTP request latency |
+| `libvirt_volume_provisioner_active_jobs` | gauge | — | Currently running jobs (max 2) |
+| `libvirt_volume_provisioner_jobs_total` | counter | status | Jobs by terminal status: `completed`, `failed`, `cancelled` |
+| `libvirt_volume_provisioner_job_duration_seconds` | histogram | status | Job execution duration |
+| `libvirt_volume_provisioner_cache_hits_total` | counter | — | Cache hits (image already local and valid) |
+| `libvirt_volume_provisioner_cache_misses_total` | counter | — | Cache misses (download required) |
+| `libvirt_volume_provisioner_cache_hit_ratio` | gauge | — | Rolling cache hit ratio (0.0–1.0) |
+| `libvirt_volume_provisioner_images_downloaded_total` | counter | — | Successful image downloads |
+| `libvirt_volume_provisioner_image_download_size_bytes` | histogram | image_type | Downloaded image sizes |
+| `libvirt_volume_provisioner_image_errors_total` | counter | operation, error_type | Image operation errors |
+| `libvirt_volume_provisioner_storage_operations_total` | counter | operation, result | Storage DB operations |
+| `libvirt_volume_provisioner_storage_errors_total` | counter | operation, error_type | Storage DB errors |
+| `libvirt_volume_provisioner_stage_duration_seconds` | histogram | stage | Download/convert stage durations |
+| `libvirt_volume_provisioner_stage_throughput_bytes_per_second` | gauge | stage | Current throughput per stage |
+| `libvirt_volume_provisioner_health_status` | gauge | — | 1=healthy, 0=degraded (at capacity) |
+| `libvirt_volume_provisioner_dependencies_up` | gauge | dependency | 1=up, 0=down per dependency: `minio`, `lvm`, `libvirt`, `storage` |
 
 **Stage Timing Metrics:**
 
@@ -145,7 +161,9 @@ spec:
     path: /metrics
     scheme: https
     tlsConfig:
-      insecureSkipVerify: true
+      caFile: /etc/prometheus/ca.crt
+      certFile: /etc/prometheus/client.crt
+      keyFile: /etc/prometheus/client.key
     bearerTokenSecret:
       name: provisioner-api-tokens
       key: token
@@ -213,13 +231,29 @@ groups:
       summary: "High request latency"
       description: "95th percentile latency is {{ $value }}s on {{ $labels.instance }}"
 
-  # High active jobs
-  - alert: VolumeProvisionerHighActiveJobs
-    expr: libvirt_volume_provisioner_active_jobs > 10
+  # Service degraded (all job slots occupied)
+  - alert: VolumeProvisionerDegraded
+    expr: libvirt_volume_provisioner_health_status == 0
+    for: 2m
+    annotations:
+      summary: "Volume Provisioner is degraded"
+      description: "All {{ $value }} job slots occupied on {{ $labels.instance }}"
+
+  # Dependency unavailable
+  - alert: VolumeProvisionerDependencyDown
+    expr: libvirt_volume_provisioner_dependencies_up == 0
     for: 5m
     annotations:
-      summary: "High number of active jobs"
-      description: "{{ $value }} active provisioning jobs on {{ $labels.instance }}"
+      summary: "Volume Provisioner dependency unavailable"
+      description: "Dependency {{ $labels.dependency }} is down on {{ $labels.instance }}"
+
+  # Low cache hit ratio
+  - alert: VolumeProvisionerLowCacheHitRatio
+    expr: libvirt_volume_provisioner_cache_hit_ratio < 0.5
+    for: 30m
+    annotations:
+      summary: "Low image cache hit ratio"
+      description: "Cache hit ratio is {{ $value | humanizePercentage }} on {{ $labels.instance }} — consider pre-warming the cache"
 ```
 
 ## Logging
@@ -329,7 +363,19 @@ Create a Grafana dashboard with:
    - Type: Gauge
 
 6. **Response Latency (95th percentile)**
-   - Panel: `histogram_quantile(0.95, rate(libvirt_volume_provisioner_requests_duration_seconds_bucket[5m]))`
+   - Panel: `histogram_quantile(0.95, rate(libvirt_volume_provisioner_request_duration_seconds_bucket[5m]))`
+   - Type: Graph
+
+7. **Cache Hit Ratio**
+   - Panel: `libvirt_volume_provisioner_cache_hit_ratio`
+   - Type: Gauge (0–1)
+
+8. **Dependency Health**
+   - Panel: `libvirt_volume_provisioner_dependencies_up`
+   - Type: Table (one row per dependency label)
+
+9. **Download Throughput**
+   - Panel: `libvirt_volume_provisioner_stage_throughput_bytes_per_second{stage="download"}`
    - Type: Graph
 
 #### Tracing Integration
