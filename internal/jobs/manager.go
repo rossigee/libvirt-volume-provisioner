@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/lvm"
+	appmetrics "github.com/rossigee/libvirt-volume-provisioner/internal/metrics"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/minio"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/timing"
@@ -121,6 +122,7 @@ type Manager struct {
 	lvmManager  *lvm.Manager
 	libvirtPool LibvirtPool
 	store       *storage.Store
+	metrics     *appmetrics.Metrics
 	semaphore   chan struct{}
 	mu          sync.RWMutex
 	bgCancel    context.CancelFunc
@@ -131,24 +133,31 @@ const maxConcurrentJobs = 2
 
 // NewManager creates a new job manager.
 func NewManager(minioClient *minio.Client, lvmManager *lvm.Manager,
-	libvirtPool LibvirtPool, store *storage.Store) *Manager {
+	libvirtPool LibvirtPool, store *storage.Store, met *appmetrics.Metrics) *Manager {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
-	m := &Manager{
+	mgr := &Manager{
 		minioClient: minioClient,
 		lvmManager:  lvmManager,
 		libvirtPool: libvirtPool,
 		store:       store,
+		metrics:     met,
 		jobs:        make(map[string]*Job),
 		semaphore:   make(chan struct{}, maxConcurrentJobs),
 		bgCancel:    bgCancel,
 	}
+	if met != nil {
+		met.UpdateDependencyStatus("minio", minioClient != nil)
+		met.UpdateDependencyStatus("lvm", lvmManager != nil)
+		met.UpdateDependencyStatus("libvirt", libvirtPool != nil)
+		met.UpdateDependencyStatus("storage", store != nil)
+	}
 	if libvirtPool != nil {
 		maxAge := parseDurationEnv("CACHE_MAX_AGE", 168*time.Hour)
 		interval := parseDurationEnv("CACHE_EVICTION_INTERVAL", time.Hour)
-		go m.runEvictionLoop(bgCtx, maxAge, interval)
+		go mgr.runEvictionLoop(bgCtx, maxAge, interval)
 	}
-	go m.runCleanupLoop(bgCtx)
-	return m
+	go mgr.runCleanupLoop(bgCtx)
+	return mgr
 }
 
 func parseDurationEnv(name string, defaultVal time.Duration) time.Duration {
@@ -427,9 +436,13 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 
 	job.mu.Lock()
 	job.Status = types.StatusRunning
+	jobStart := job.CreatedAt
 	job.UpdatedAt = time.Now()
 	job.mu.Unlock()
 	m.syncToDatabase(ctx, job)
+	if m.metrics != nil {
+		m.metrics.RecordJobStart()
+	}
 
 	defer func() {
 		job.mu.Lock()
@@ -439,6 +452,10 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 		job.mu.Unlock()
 
 		m.syncToDatabase(ctx, job)
+
+		if m.metrics != nil {
+			m.metrics.RecordJobEnd(string(status), time.Since(jobStart).Seconds())
+		}
 
 		switch status {
 		case types.StatusCompleted:
@@ -653,6 +670,9 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 			job.CacheHit = true
 			job.ImagePath = cachedImage.Path
 			job.mu.Unlock()
+			if m.metrics != nil {
+				m.metrics.RecordCacheHit()
+			}
 			return cachedImage.Path, nil
 		}
 
@@ -674,6 +694,9 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 			job.CacheHit = true
 			job.ImagePath = cachedImage.Path
 			job.mu.Unlock()
+			if m.metrics != nil {
+				m.metrics.RecordCacheHit()
+			}
 			return cachedImage.Path, nil
 		}
 
@@ -689,6 +712,9 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 	cacheSpan.SetAttributes(attribute.String("cache.result", "miss"))
 	cacheSpan.SetStatus(codes.Ok, "cache miss")
 	cacheSpan.End()
+	if m.metrics != nil {
+		m.metrics.RecordCacheMiss()
+	}
 
 	logrus.WithFields(logrus.Fields{
 		"job_id":    job.ID,
@@ -729,6 +755,10 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 				JobID:          job.ID,
 				CreatedAt:      time.Now(),
 			})
+			if m.metrics != nil {
+				m.metrics.RecordImageDownload(req.ImageType, float64(stat.Size()))
+				m.metrics.RecordStageDuration("download", downloadDuration.Seconds())
+			}
 		}
 	}
 
@@ -890,9 +920,13 @@ func (m *Manager) runCacheJob(ctx context.Context, job *Job) {
 
 	job.mu.Lock()
 	job.Status = types.StatusRunning
+	jobStart := job.CreatedAt
 	job.UpdatedAt = time.Now()
 	job.mu.Unlock()
 	m.syncToDatabase(ctx, job)
+	if m.metrics != nil {
+		m.metrics.RecordJobStart()
+	}
 
 	defer func() {
 		job.mu.Lock()
@@ -902,6 +936,10 @@ func (m *Manager) runCacheJob(ctx context.Context, job *Job) {
 		job.mu.Unlock()
 
 		m.syncToDatabase(ctx, job)
+
+		if m.metrics != nil {
+			m.metrics.RecordJobEnd(string(status), time.Since(jobStart).Seconds())
+		}
 
 		switch status {
 		case types.StatusCompleted:
