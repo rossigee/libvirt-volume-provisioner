@@ -38,9 +38,9 @@ import (
 
 var errOTLPNotConfigured = errors.New("OTLP not configured")
 
-// Build information - set at build time
+// Build information - set at build time via -ldflags "-X main.version=... -X main.buildTime=..."
 var (
-	version   = "v0.8.0"
+	version   = "v0.10.0"
 	buildTime = "unknown"
 )
 

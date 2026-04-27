@@ -200,35 +200,6 @@ func (m *MockProgressUpdater) UpdateProgress(stage string, percent float64, byte
 	}{stage, percent, bytesProcessed, bytesTotal})
 }
 
-// TestDownloadImage tests the DownloadImage method
-func TestDownloadImage(t *testing.T) {
-	// Setup test client
-	_ = os.Setenv("MINIO_ENDPOINT", "https://minio.example.com:9000")
-	_ = os.Setenv("MINIO_ACCESS_KEY", "test-access-key")
-	_ = os.Setenv("MINIO_SECRET_KEY", "test-secret-key")
-	defer func() {
-		_ = os.Unsetenv("MINIO_ENDPOINT")
-		_ = os.Unsetenv("MINIO_ACCESS_KEY")
-		_ = os.Unsetenv("MINIO_SECRET_KEY")
-	}()
-
-	client, err := NewClient()
-	require.NoError(t, err)
-	require.NotNil(t, client)
-
-	updater := &MockProgressUpdater{}
-
-	// Test with invalid URL - should fail during URL parsing
-	_, err = client.DownloadImage(context.Background(), "not-a-valid-url", updater)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid image URL")
-
-	// Test with valid URL format but non-existent server - should fail during connection
-	_, err = client.DownloadImage(context.Background(),
-		"https://minio.example.com:9000/test-bucket/test-image.qcow2", updater)
-	assert.Error(t, err) // Expected to fail in test environment without MinIO server
-}
-
 // TestDownloadImageToPath tests the DownloadImageToPath method
 func TestDownloadImageToPath(t *testing.T) {
 	// Setup test client

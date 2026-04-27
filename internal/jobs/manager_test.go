@@ -676,10 +676,10 @@ func TestGetOrDownloadImage_NoDependencies(t *testing.T) {
 }
 
 // TestRunJob_NoDependencies tests runJob with missing dependencies in test environment
-func TestRunJob_NoDependencies_TestEnv(t *testing.T) {
+func TestRunJob_NoDependencies(t *testing.T) {
 	manager := &Manager{
 		jobs: make(map[string]*Job),
-		// Missing dependencies
+		// Missing dependencies — job must fail, not silently succeed
 	}
 
 	job := &Job{
@@ -692,11 +692,12 @@ func TestRunJob_NoDependencies_TestEnv(t *testing.T) {
 		Status: types.StatusPending,
 	}
 
-	// This should complete successfully in test environment
 	manager.runJob(context.Background(), job)
 
-	// In test environment, job should be marked as completed
-	assert.Equal(t, types.StatusCompleted, job.Status)
+	job.mu.RLock()
+	status := job.Status
+	job.mu.RUnlock()
+	assert.Equal(t, types.StatusFailed, status)
 }
 
 // TestCleanupCompletedJobs_Enhanced tests the job cleanup functionality
@@ -804,7 +805,7 @@ func TestStop(t *testing.T) {
 	m := &Manager{
 		jobs:        make(map[string]*Job),
 		semaphore:   make(chan struct{}, 2),
-		evictCancel: cancel,
+		bgCancel: cancel,
 	}
 
 	// Should not panic
@@ -819,7 +820,7 @@ func TestStop(t *testing.T) {
 	}
 }
 
-// TestStop_NilCancel tests that Stop handles a nil evictCancel gracefully
+// TestStop_NilCancel tests that Stop handles a nil bgCancel gracefully
 func TestStop_NilCancel(t *testing.T) {
 	m := &Manager{
 		jobs:      make(map[string]*Job),
@@ -952,7 +953,7 @@ func TestNewManager_NilPool(t *testing.T) {
 	m := NewManager(nil, nil, nil, nil)
 	defer m.Stop()
 	assert.NotNil(t, m)
-	assert.NotNil(t, m.evictCancel)
+	assert.NotNil(t, m.bgCancel)
 }
 
 // TestDeleteCachedImage_Manager tests DeleteCachedImage resolves the path via the pool and deletes it.

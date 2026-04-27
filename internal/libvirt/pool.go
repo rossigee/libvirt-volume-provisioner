@@ -102,52 +102,32 @@ func (pm *PoolManager) ensurePool() error {
 	return nil
 }
 
-// AllocateImage allocates space for an image in the libvirt storage pool
-// DEPRECATED: Use AllocateImageFile instead for better compression handling
-func (pm *PoolManager) AllocateImage(imageName string, sizeBytes uint64) (string, error) {
-	pool, err := pm.conn.LookupStoragePoolByName(pm.poolName)
-	if err != nil {
-		return "", fmt.Errorf("failed to lookup pool: %w", err)
-	}
-	defer func() { _ = pool.Free() }()
-
-	// Generate volume XML
-	volumeXML := fmt.Sprintf(`
-<volume>
-  <name>%s</name>
-  <capacity>%d</capacity>
-  <target>
-    <format type="raw"/>
-  </target>
-</volume>`, imageName, sizeBytes)
-
-	// Create the volume
-	vol, err := pool.StorageVolCreateXML(volumeXML, 0)
-	if err != nil {
-		return "", fmt.Errorf("failed to create volume: %w", err)
-	}
-	defer func() { _ = vol.Free() }()
-
-	// Get the volume path
-	volPath, err := vol.GetPath()
-	if err != nil {
-		return "", fmt.Errorf("failed to get volume path: %w", err)
-	}
-
-	return volPath, nil
-}
-
 // AllocateImageFile allocates a file path for caching an image without creating a libvirt volume.
 // This preserves compression in QCOW2 images by storing them as plain files instead of RAW volumes.
+// cacheKey must be a 64-character lowercase hex string (SHA-256 of the source URL).
 func (pm *PoolManager) AllocateImageFile(cacheKey string) (string, error) {
-	// Ensure cache directory exists
+	if !isValidCacheKey(cacheKey) {
+		return "", fmt.Errorf("invalid cache key %q: must be 64 lowercase hex characters", cacheKey)
+	}
+
 	if err := os.MkdirAll(pm.poolPath, 0o750); err != nil {
 		return "", fmt.Errorf("failed to create cache directory: %w", err)
 	}
 
-	// Return the full path where the image file will be stored
-	imagePath := filepath.Join(pm.poolPath, cacheKey)
-	return imagePath, nil
+	return filepath.Join(pm.poolPath, cacheKey), nil
+}
+
+// isValidCacheKey reports whether k is a 64-character lowercase hex string.
+func isValidCacheKey(k string) bool {
+	if len(k) != 64 {
+		return false
+	}
+	for _, r := range k {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // CheckCache checks if an image is already cached by looking for the checksum file.
@@ -247,20 +227,6 @@ func CalculateChecksum(filePath string) (string, error) {
 	}
 
 	return fmt.Sprintf("%x", hash.Sum(nil)), nil
-}
-
-// GetImageNameFromURL extracts a suitable volume name from the image URL
-func GetImageNameFromURL(imageURL string) string {
-	// Extract filename from URL
-	parts := strings.Split(imageURL, "/")
-	filename := parts[len(parts)-1]
-
-	// Remove file extension and sanitize
-	name := strings.TrimSuffix(filename, filepath.Ext(filename))
-	name = strings.ReplaceAll(name, "-", "_")
-	name = strings.ReplaceAll(name, ".", "_")
-
-	return name
 }
 
 // DeleteImage removes an image and its checksum from the cache

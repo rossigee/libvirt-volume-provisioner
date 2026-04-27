@@ -3,70 +3,73 @@ package auth
 import (
 	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
+// writeTokenFile writes tokens to a temp file and returns its path.
+func writeTokenFile(t *testing.T, tokens ...string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "tokens-*")
+	require.NoError(t, err)
+	for _, tok := range tokens {
+		_, err = f.WriteString(tok + "\n")
+		require.NoError(t, err)
+	}
+	require.NoError(t, f.Close())
+	return f.Name()
+}
+
 func TestNewValidator(t *testing.T) {
-	// Ensure no client CA file exists for test
-	_ = os.Unsetenv("CLIENT_CA_CERT")
-	defer func() { _ = os.Unsetenv("CLIENT_CA_CERT") }()
+	tokenFile := writeTokenFile(t, "test-token-abcdef")
+	t.Setenv("API_TOKENS_FILE", tokenFile)
 
-	// Set to non-existent path to ensure CA is not loaded
-	_ = os.Setenv("CLIENT_CA_CERT", "/nonexistent/ca.pem")
+	t.Run("no client CA configured", func(t *testing.T) {
+		t.Setenv("CLIENT_CA_CERT", "")
+		validator, err := NewValidator()
+		require.NoError(t, err)
+		require.NotNil(t, validator)
+		assert.False(t, validator.IsClientCALoaded())
+	})
 
-	validator, err := NewValidator()
-
-	assert.NoError(t, err)
-	assert.NotNil(t, validator)
-	assert.False(t, validator.IsClientCALoaded())
+	t.Run("client CA points to non-existent file", func(t *testing.T) {
+		t.Setenv("CLIENT_CA_CERT", "/nonexistent/ca.pem")
+		_, err := NewValidator()
+		assert.Error(t, err)
+	})
 }
 
 func TestLoadAPITokens(t *testing.T) {
-	// Clear environment
-	_ = os.Unsetenv("API_TOKENS_FILE")
-	defer func() { _ = os.Unsetenv("API_TOKENS_FILE") }()
+	t.Run("missing token file returns error", func(t *testing.T) {
+		t.Setenv("API_TOKENS_FILE", filepath.Join(t.TempDir(), "nonexistent-tokens"))
+		v := &Validator{apiTokens: make(map[string]bool)}
+		err := v.loadAPITokens()
+		assert.Error(t, err)
+	})
 
-	tests := []struct {
-		name           string
-		tokensFile     string
-		expectError    bool
-		expectedTokens map[string]bool
-	}{
-		{
-			name:           "no token file - use defaults",
-			tokensFile:     "",
-			expectError:    false,
-			expectedTokens: map[string]bool{"dev-token-12345": true},
-		},
-	}
+	t.Run("valid token file loads tokens", func(t *testing.T) {
+		tokenFile := writeTokenFile(t, "token-one", "token-two", "# comment")
+		t.Setenv("API_TOKENS_FILE", tokenFile)
+		v := &Validator{apiTokens: make(map[string]bool)}
+		require.NoError(t, v.loadAPITokens())
+		assert.True(t, v.apiTokens["token-one"])
+		assert.True(t, v.apiTokens["token-two"])
+		assert.False(t, v.apiTokens["# comment"])
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.tokensFile != "" {
-				_ = os.Setenv("API_TOKENS_FILE", tt.tokensFile)
-			} else {
-				_ = os.Unsetenv("API_TOKENS_FILE")
-			}
-
-			validator := &Validator{
-				apiTokens: make(map[string]bool),
-			}
-
-			err := validator.loadAPITokens()
-
-			if tt.expectError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				for token, expected := range tt.expectedTokens {
-					assert.Equal(t, expected, validator.apiTokens[token])
-				}
-			}
-		})
-	}
+	t.Run("empty token file returns error", func(t *testing.T) {
+		f, err := os.CreateTemp(t.TempDir(), "empty-tokens-*")
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+		t.Setenv("API_TOKENS_FILE", f.Name())
+		v := &Validator{apiTokens: make(map[string]bool)}
+		err = v.loadAPITokens()
+		assert.Error(t, err)
+	})
 }
 
 func TestValidateAPIToken(t *testing.T) {
@@ -111,7 +114,6 @@ func TestValidateAPIToken(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create a fresh gin context for each test
 			c, _ := gin.CreateTestContext(nil)
 			c.Request = &http.Request{Header: make(http.Header)}
 			if tt.authHeader != "" {

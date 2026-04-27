@@ -11,12 +11,17 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/metrics"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 )
+
+// maxConcurrentJobs must match the semaphore size in jobs.Manager.
+const maxConcurrentJobs = 2
+
+// maxRequestBodyBytes caps the size of incoming JSON request bodies.
+const maxRequestBodyBytes = 1 * 1024 * 1024 // 1 MB
 
 // JobManager interface for job operations
 type JobManager interface {
@@ -37,39 +42,6 @@ type Handler struct {
 	version    string
 }
 
-// Metrics
-var (
-	requestsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "libvirt_volume_provisioner_requests_total",
-			Help: "Total number of requests by endpoint and method",
-		},
-		[]string{"method", "endpoint", "status"},
-	)
-
-	activeJobsGauge = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "libvirt_volume_provisioner_active_jobs",
-			Help: "Number of currently active jobs",
-		},
-	)
-
-	jobsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "libvirt_volume_provisioner_jobs_total",
-			Help: "Total number of jobs by status",
-		},
-		[]string{"status"},
-	)
-)
-
-func init() {
-	// Register metrics
-	prometheus.MustRegister(requestsTotal)
-	prometheus.MustRegister(activeJobsGauge)
-	prometheus.MustRegister(jobsTotal)
-}
-
 // NewHandler creates a new API handler
 func NewHandler(jobManager JobManager, metrics *metrics.Metrics, version string) *Handler {
 	return &Handler{
@@ -85,24 +57,36 @@ func metricsMiddleware(m *metrics.Metrics) gin.HandlerFunc {
 		start := time.Now()
 		c.Next()
 
-		// Track request metrics
-		duration := time.Since(start).Seconds()
-		status := c.Writer.Status()
-
-		// Legacy metrics for backward compatibility
-		requestsTotal.WithLabelValues(c.Request.Method, c.FullPath(), fmt.Sprintf("%d", status)).Inc()
-
-		// New enhanced metrics (only if metrics is provided)
 		if m != nil {
-			m.RequestsTotal.WithLabelValues(c.Request.Method, c.FullPath(), fmt.Sprintf("%d", status)).Inc()
+			duration := time.Since(start).Seconds()
+			status := fmt.Sprintf("%d", c.Writer.Status())
+			m.RequestsTotal.WithLabelValues(c.Request.Method, c.FullPath(), status).Inc()
 			m.RequestDuration.WithLabelValues(c.Request.Method, c.FullPath()).Observe(duration)
 		}
 	}
 }
 
+// bodySizeLimitMiddleware caps incoming request body size to prevent DoS.
+func bodySizeLimitMiddleware(limit int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		c.Next()
+	}
+}
+
+// isHexString reports whether s consists entirely of lowercase hex characters.
+func isHexString(s string) bool {
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // SetupRoutes configures the API routes
 func SetupRoutes(router *gin.Engine, handler *Handler, authMiddleware gin.HandlerFunc) {
-	// Add metrics middleware to all routes
+	router.Use(bodySizeLimitMiddleware(maxRequestBodyBytes))
 	router.Use(metricsMiddleware(handler.metrics))
 
 	// Public endpoints (no auth required)
@@ -143,12 +127,10 @@ func (h *Handler) ProvisionVolume(c *gin.Context) {
 		return
 	}
 
-	// Default image type to qcow2
 	if req.ImageType == "" {
 		req.ImageType = "qcow2"
 	}
 
-	// Validate image URL format
 	if req.ImageURL == "" || req.VolumeName == "" {
 		c.JSON(http.StatusBadRequest, types.ErrorResponse{
 			Error:   "invalid request",
@@ -158,13 +140,11 @@ func (h *Handler) ProvisionVolume(c *gin.Context) {
 		return
 	}
 
-	// Start provisioning job
 	jobID, err := h.jobManager.StartJob(c.Request.Context(), req)
 	if err != nil {
 		if h.metrics != nil {
 			h.metrics.JobsTotal.WithLabelValues("failed").Inc()
 		}
-		jobsTotal.WithLabelValues("failed").Inc() // Legacy compatibility
 		c.JSON(http.StatusInternalServerError, types.ErrorResponse{
 			Error:   "failed to start provisioning",
 			Message: err.Error(),
@@ -173,18 +153,12 @@ func (h *Handler) ProvisionVolume(c *gin.Context) {
 		return
 	}
 
-	// Update metrics
 	if h.metrics != nil {
 		h.metrics.RecordJobStart()
 		h.metrics.JobsTotal.WithLabelValues("started").Inc()
 	}
-	jobsTotal.WithLabelValues("started").Inc() // Legacy compatibility
 
-	response := types.ProvisionResponse{
-		JobID: jobID,
-	}
-
-	c.JSON(http.StatusAccepted, response)
+	c.JSON(http.StatusAccepted, types.ProvisionResponse{JobID: jobID})
 }
 
 // GetJobStatus returns the status of a provisioning job
@@ -260,7 +234,6 @@ func (h *Handler) ListCachedImages(c *gin.Context) {
 		return
 	}
 
-	// Parse pagination parameters
 	offset := 0
 	limit := 100
 	if v := c.Query("offset"); v != "" {
@@ -274,7 +247,6 @@ func (h *Handler) ListCachedImages(c *gin.Context) {
 		}
 	}
 
-	// Convert to response format
 	allImages := make([]types.CachedImageInfo, len(cachedImages))
 	for i, img := range cachedImages {
 		allImages[i] = types.CachedImageInfo{
@@ -285,7 +257,6 @@ func (h *Handler) ListCachedImages(c *gin.Context) {
 		}
 	}
 
-	// Apply pagination
 	total := len(allImages)
 	if offset > total {
 		offset = total
@@ -294,16 +265,13 @@ func (h *Handler) ListCachedImages(c *gin.Context) {
 	if end > total {
 		end = total
 	}
-	images := allImages[offset:end]
 
-	response := types.ListCachedImagesResponse{
-		Images: images,
+	c.JSON(http.StatusOK, types.ListCachedImagesResponse{
+		Images: allImages[offset:end],
 		Count:  total,
 		Offset: offset,
 		Limit:  limit,
-	}
-
-	c.JSON(http.StatusOK, response)
+	})
 }
 
 // FetchImageToCache handles requests to fetch an image to cache
@@ -318,7 +286,6 @@ func (h *Handler) FetchImageToCache(c *gin.Context) {
 		return
 	}
 
-	// Validate image URL format
 	if req.ImageURL == "" {
 		c.JSON(http.StatusBadRequest, types.ErrorResponse{
 			Error:   "invalid request",
@@ -328,10 +295,11 @@ func (h *Handler) FetchImageToCache(c *gin.Context) {
 		return
 	}
 
-	// Start cache job
 	jobID, err := h.jobManager.FetchImageToCache(c.Request.Context(), req)
 	if err != nil {
-		jobsTotal.WithLabelValues("failed").Inc()
+		if h.metrics != nil {
+			h.metrics.JobsTotal.WithLabelValues("failed").Inc()
+		}
 		c.JSON(http.StatusInternalServerError, types.ErrorResponse{
 			Error:   "failed to start cache fetch",
 			Message: err.Error(),
@@ -340,21 +308,21 @@ func (h *Handler) FetchImageToCache(c *gin.Context) {
 		return
 	}
 
-	// Update metrics
-	jobsTotal.WithLabelValues("started").Inc()
-
-	response := types.FetchImageToCacheResponse{
-		JobID: jobID,
+	if h.metrics != nil {
+		h.metrics.JobsTotal.WithLabelValues("started").Inc()
 	}
 
-	c.JSON(http.StatusAccepted, response)
+	c.JSON(http.StatusAccepted, types.FetchImageToCacheResponse{JobID: jobID})
 }
 
-// DeleteCachedImage handles requests to delete a specific cached image by its 64-char hex key
+// DeleteCachedImage handles requests to delete a specific cached image by its 64-char hex key.
 func (h *Handler) DeleteCachedImage(c *gin.Context) {
 	key := c.Param("key")
-	if len(key) != 64 {
-		c.JSON(http.StatusBadRequest, types.ErrorResponse{Error: "invalid key", Code: 400})
+	if len(key) != 64 || !isHexString(key) {
+		c.JSON(http.StatusBadRequest, types.ErrorResponse{
+			Error:   "invalid key: must be 64 lowercase hex characters",
+			Code:    400,
+		})
 		return
 	}
 	if err := h.jobManager.DeleteCachedImage(key); err != nil {
@@ -368,21 +336,20 @@ func (h *Handler) DeleteCachedImage(c *gin.Context) {
 func (h *Handler) HealthCheck(c *gin.Context) {
 	activeJobsCount := h.jobManager.GetActiveJobs()
 
-	// Update metrics
-	activeJobsGauge.Set(float64(activeJobsCount))
+	if h.metrics != nil {
+		h.metrics.ActiveJobs.Set(float64(activeJobsCount))
+	}
 
 	response := types.HealthResponse{
 		Status:    "healthy",
 		Timestamp: time.Now(),
 		Version:   h.version,
-		Uptime:    "unknown", // Could be implemented with start time tracking
+		Uptime:    "unknown",
 	}
 
-	// Return degraded status if too many active jobs
-	if activeJobsCount > 2 {
+	// Degraded when at full capacity (semaphore exhausted)
+	if activeJobsCount >= maxConcurrentJobs {
 		response.Status = "degraded"
-		c.JSON(http.StatusOK, response)
-		return
 	}
 
 	c.JSON(http.StatusOK, response)

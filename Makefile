@@ -1,4 +1,8 @@
-.PHONY: build clean test lint docker-build docker-run deb
+.PHONY: build build-linux clean test lint run deps deb \
+        docker-build docker-run build-docker build-docker-dev \
+        docker-compose-up docker-compose-down docker-compose-logs \
+        integration-up integration-down integration-logs integration-test integration-clean \
+        deploy install-systemd uninstall-systemd help
 
 # Go parameters
 GOCMD=go
@@ -15,7 +19,7 @@ BINARY_UNIX=$(BINARY_NAME)_unix
 
 # Debian package parameters
 DEB_NAME=libvirt-volume-provisioner
-DEB_VERSION ?= 0.9.0
+DEB_VERSION ?= 0.10.0
 DEB_ARCH=amd64
 DEB_BUILD_DIR=deb-build
 
@@ -28,32 +32,32 @@ help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 # Build the binary
-build:
+build: ## Build binary for current platform
 	$(GOMOD) tidy
 	$(GOBUILD) -o $(BINARY_NAME) -v ./$(MAIN_PACKAGE)
 
 # Build for Linux
-build-linux:
+build-linux: ## Build binary for Linux amd64 (used by deb target)
 	CGO_ENABLED=1 CGO_CFLAGS="-Wno-discarded-qualifiers" GOOS=linux GOARCH=amd64 $(GOBUILD) -tags libsqlite3 -ldflags "-X main.version=$(DEB_VERSION) -X 'main.buildTime=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")'" -o $(BINARY_UNIX) -v ./$(MAIN_PACKAGE)
 
 # Test
-test:
+test: ## Run unit tests
 	$(GOTEST) -v ./...
 
 # Lint
-lint:
+lint: ## Run golangci-lint
 	golangci-lint run
 
 # Docker build
-docker-build:
+docker-build: ## Build development Docker image
 	docker build -t libvirt-volume-provisioner .
 
 # Docker run
-docker-run:
+docker-run: ## Run service via Docker using .env file
 	docker run -p 8080:8080 --env-file .env libvirt-volume-provisioner
 
 # Build Debian package
-deb: build-linux
+deb: build-linux ## Build Debian .deb package
 	@echo "Building Debian package..."
 	@rm -rf $(DEB_BUILD_DIR)
 	@mkdir -p $(DEB_BUILD_DIR)/DEBIAN
@@ -182,7 +186,7 @@ deb: build-linux
 	@echo "Debian package created: $(DEB_NAME)_$(DEB_VERSION)_$(DEB_ARCH).deb"
 
 # Clean
-clean:
+clean: ## Remove build artefacts and packages
 	$(GOCLEAN)
 	rm -f $(BINARY_NAME)
 	rm -f $(BINARY_UNIX)
@@ -190,12 +194,12 @@ clean:
 	rm -rf $(DEB_BUILD_DIR)
 
 # Run
-run:
+run: ## Build and run the service locally
 	$(GOBUILD) -o $(BINARY_NAME) -v ./$(MAIN_PACKAGE)
 	./$(BINARY_NAME)
 
 # Dependencies
-deps:
+deps: ## Download Go module dependencies
 	$(GOMOD) download
 	$(GOGET) github.com/gin-gonic/gin
 	$(GOGET) github.com/google/uuid
