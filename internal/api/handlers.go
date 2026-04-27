@@ -40,6 +40,7 @@ type Handler struct {
 	jobManager JobManager
 	metrics    *metrics.Metrics
 	version    string
+	startTime  time.Time
 }
 
 // NewHandler creates a new API handler
@@ -48,6 +49,7 @@ func NewHandler(jobManager JobManager, metrics *metrics.Metrics, version string)
 		jobManager: jobManager,
 		metrics:    metrics,
 		version:    version,
+		startTime:  time.Now(),
 	}
 }
 
@@ -151,11 +153,6 @@ func (h *Handler) ProvisionVolume(c *gin.Context) {
 			Code:    500,
 		})
 		return
-	}
-
-	if h.metrics != nil {
-		h.metrics.RecordJobStart()
-		h.metrics.JobsTotal.WithLabelValues("started").Inc()
 	}
 
 	c.JSON(http.StatusAccepted, types.ProvisionResponse{JobID: jobID})
@@ -308,10 +305,6 @@ func (h *Handler) FetchImageToCache(c *gin.Context) {
 		return
 	}
 
-	if h.metrics != nil {
-		h.metrics.JobsTotal.WithLabelValues("started").Inc()
-	}
-
 	c.JSON(http.StatusAccepted, types.FetchImageToCacheResponse{JobID: jobID})
 }
 
@@ -335,21 +328,23 @@ func (h *Handler) DeleteCachedImage(c *gin.Context) {
 // HealthCheck provides service health information
 func (h *Handler) HealthCheck(c *gin.Context) {
 	activeJobsCount := h.jobManager.GetActiveJobs()
+	healthy := activeJobsCount < maxConcurrentJobs
 
 	if h.metrics != nil {
 		h.metrics.ActiveJobs.Set(float64(activeJobsCount))
+		h.metrics.UpdateHealthStatus(healthy)
+	}
+
+	status := "healthy"
+	if !healthy {
+		status = "degraded"
 	}
 
 	response := types.HealthResponse{
-		Status:    "healthy",
+		Status:    status,
 		Timestamp: time.Now(),
 		Version:   h.version,
-		Uptime:    "unknown",
-	}
-
-	// Degraded when at full capacity (semaphore exhausted)
-	if activeJobsCount >= maxConcurrentJobs {
-		response.Status = "degraded"
+		Uptime:    time.Since(h.startTime).Round(time.Second).String(),
 	}
 
 	c.JSON(http.StatusOK, response)

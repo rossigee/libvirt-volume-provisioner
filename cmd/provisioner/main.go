@@ -309,7 +309,10 @@ func main() {
 	}
 	logrus.Info("Libvirt pool manager initialized successfully")
 
-	jobManager := jobs.NewManager(minioClient, lvmManager, libvirtPool, store)
+	// Initialize metrics
+	appMetrics := metrics.NewMetrics()
+
+	jobManager := jobs.NewManager(minioClient, lvmManager, libvirtPool, store, appMetrics)
 
 	// Initialize Gin router
 	router := gin.New()
@@ -322,9 +325,6 @@ func main() {
 	if tp != nil {
 		router.Use(otelgin.Middleware("libvirt-volume-provisioner"))
 	}
-
-	// Initialize metrics
-	appMetrics := metrics.NewMetrics()
 
 	// Initialize API handlers
 	apiHandler := api.NewHandler(jobManager, appMetrics, version)

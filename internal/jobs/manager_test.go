@@ -937,7 +937,7 @@ func TestNewManager_StartsEvictionLoop(t *testing.T) {
 	}
 
 	t.Setenv("CACHE_EVICTION_INTERVAL", "50ms")
-	m := NewManager(nil, nil, pool, nil)
+	m := NewManager(nil, nil, pool, nil, nil)
 	defer m.Stop()
 
 	select {
@@ -950,7 +950,7 @@ func TestNewManager_StartsEvictionLoop(t *testing.T) {
 
 // TestNewManager_NilPool tests that NewManager does not start the eviction goroutine when pool is nil.
 func TestNewManager_NilPool(t *testing.T) {
-	m := NewManager(nil, nil, nil, nil)
+	m := NewManager(nil, nil, nil, nil, nil)
 	defer m.Stop()
 	assert.NotNil(t, m)
 	assert.NotNil(t, m.bgCancel)
