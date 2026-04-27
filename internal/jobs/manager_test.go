@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	appmetrics "github.com/rossigee/libvirt-volume-provisioner/internal/metrics"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 	"github.com/stretchr/testify/assert"
 )
@@ -954,6 +956,22 @@ func TestNewManager_NilPool(t *testing.T) {
 	defer m.Stop()
 	assert.NotNil(t, m)
 	assert.NotNil(t, m.bgCancel)
+}
+
+// TestNewManager_SetsInitialDependencyMetrics verifies that NewManager records dependency
+// status for each component based on whether it was provided.
+func TestNewManager_SetsInitialDependencyMetrics(t *testing.T) {
+	met := appmetrics.NewMetrics()
+	pool := &mockLibvirtPool{}
+
+	m := NewManager(nil, nil, pool, nil, met)
+	defer m.Stop()
+
+	// minio and storage are nil → 0; libvirt pool is non-nil → 1; lvm is nil → 0
+	assert.InDelta(t, 0.0, testutil.ToFloat64(met.DependenciesUp.WithLabelValues("minio")), 0.001)
+	assert.InDelta(t, 0.0, testutil.ToFloat64(met.DependenciesUp.WithLabelValues("lvm")), 0.001)
+	assert.InDelta(t, 1.0, testutil.ToFloat64(met.DependenciesUp.WithLabelValues("libvirt")), 0.001)
+	assert.InDelta(t, 0.0, testutil.ToFloat64(met.DependenciesUp.WithLabelValues("storage")), 0.001)
 }
 
 // TestDeleteCachedImage_Manager tests DeleteCachedImage resolves the path via the pool and deletes it.

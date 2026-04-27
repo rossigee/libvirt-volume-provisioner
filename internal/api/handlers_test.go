@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -10,15 +11,19 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	appmetrics "github.com/rossigee/libvirt-volume-provisioner/internal/metrics"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // MockJobManager for testing
 type MockJobManager struct {
 	startJobCalled bool
 	lastRequest    types.ProvisionRequest
+	activeJobs     int
 }
 
 func (m *MockJobManager) StartJob(ctx context.Context, req types.ProvisionRequest) (string, error) {
@@ -41,7 +46,7 @@ func (m *MockJobManager) CancelJob(_ context.Context, _ string) error {
 }
 
 func (m *MockJobManager) GetActiveJobs() int {
-	return 0
+	return m.activeJobs
 }
 
 func (m *MockJobManager) GetJobCacheInfo(_ string) (bool, string, error) {
@@ -103,19 +108,16 @@ func TestSetupRoutes(t *testing.T) {
 	assert.True(t, routePaths["GET /metrics"])
 }
 
+func setupHealthRouter(handler *Handler) *gin.Engine {
+	router := gin.New()
+	SetupRoutes(router, handler, func(c *gin.Context) { c.Next() })
+	return router
+}
+
 func TestHealthCheck(t *testing.T) {
 	mockManager := &MockJobManager{}
 	handler := NewHandler(mockManager, nil, "test-version")
-
-	// Create test router
-	router := gin.New()
-
-	// Mock auth middleware
-	authMiddleware := func(c *gin.Context) {
-		c.Next()
-	}
-
-	SetupRoutes(router, handler, authMiddleware)
+	router := setupHealthRouter(handler)
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
@@ -124,6 +126,51 @@ func TestHealthCheck(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "healthy")
 	assert.Contains(t, w.Body.String(), "test-version")
+}
+
+func TestHealthCheck_ReportsRealUptime(t *testing.T) {
+	mockManager := &MockJobManager{}
+	handler := NewHandler(mockManager, nil, "test-version")
+	router := setupHealthRouter(handler)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
+	router.ServeHTTP(w, req)
+
+	var resp types.HealthResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.NotEmpty(t, resp.Uptime)
+	assert.NotEqual(t, "unknown", resp.Uptime)
+}
+
+func TestHealthCheck_SetsHealthStatusMetric(t *testing.T) {
+	mockManager := &MockJobManager{} // GetActiveJobs returns 0 → healthy
+	m := appmetrics.NewMetrics()
+	handler := NewHandler(mockManager, m, "test-version")
+	router := setupHealthRouter(handler)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.InDelta(t, 1.0, testutil.ToFloat64(m.HealthStatus), 0.001)
+}
+
+func TestHealthCheck_DegradedSetsMetric(t *testing.T) {
+	mockManager := &MockJobManager{activeJobs: maxConcurrentJobs}
+	m := appmetrics.NewMetrics()
+	handler := NewHandler(mockManager, m, "test-version")
+	router := setupHealthRouter(handler)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
+	router.ServeHTTP(w, req)
+
+	var resp types.HealthResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "degraded", resp.Status)
+	assert.InDelta(t, 0.0, testutil.ToFloat64(m.HealthStatus), 0.001)
 }
 
 func TestProvisionVolume_InvalidJSON(t *testing.T) {
