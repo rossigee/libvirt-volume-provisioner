@@ -1,6 +1,6 @@
 module github.com/rossigee/libvirt-volume-provisioner
 
-go 1.25.8
+go 1.26.2
 
 require (
 	github.com/gin-gonic/gin v1.12.0

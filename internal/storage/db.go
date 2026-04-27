@@ -203,7 +203,7 @@ func (s *Store) GetJob(id string) (*JobRecord, error) {
 	)
 
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("job not found: %s", id)
 		}
 		return nil, fmt.Errorf("failed to query job: %w", err)

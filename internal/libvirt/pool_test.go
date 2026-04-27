@@ -12,47 +12,46 @@ import (
 )
 
 func TestAllocateImageFile(t *testing.T) {
+	// validKey is a well-formed 64-char lowercase hex SHA-256 cache key.
+	validKey := "a3f1e2d4b5c6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+
 	tests := []struct {
-		expectError      bool
-		expectPathSuffix string
-		imageName        string
-		name             string
+		name        string
+		imageName   string
+		expectError bool
 	}{
 		{
-			name:             "simple image name",
-			imageName:        "ubuntu_20_04_qcow2",
-			expectError:      false,
-			expectPathSuffix: "ubuntu_20_04_qcow2",
+			name:        "valid hex cache key",
+			imageName:   validKey,
+			expectError: false,
 		},
 		{
-			name:             "image name with extension",
-			imageName:        "debian_11_qcow2.img",
-			expectError:      false,
-			expectPathSuffix: "debian_11_qcow2.img",
+			name:        "non-hex characters rejected",
+			imageName:   "ubuntu_20_04_qcow2_ubuntu_20_04_qcow2_ubuntu_20_04_qcow2_ubuntu_20",
+			expectError: true,
 		},
 		{
-			name:             "image name with spaces",
-			imageName:        "my image name",
-			expectError:      false,
-			expectPathSuffix: "my image name",
+			name:        "uppercase hex rejected",
+			imageName:   "A3F1E2D4B5C6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2",
+			expectError: true,
 		},
 		{
-			name:             "empty image name",
-			imageName:        "",
-			expectError:      false,
-			expectPathSuffix: "",
+			name:        "too short rejected",
+			imageName:   "a3f1e2d4",
+			expectError: true,
+		},
+		{
+			name:        "empty key rejected",
+			imageName:   "",
+			expectError: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create temporary pool directory
 			tmpDir := t.TempDir()
-			pm := &PoolManager{
-				poolPath: tmpDir,
-			}
+			pm := &PoolManager{poolPath: tmpDir}
 
-			// Test AllocateImageFile
 			imagePath, err := pm.AllocateImageFile(tt.imageName)
 
 			if tt.expectError {
@@ -61,10 +60,8 @@ func TestAllocateImageFile(t *testing.T) {
 				assert.NoError(t, err)
 				assert.NotEmpty(t, imagePath)
 				assert.True(t, filepath.IsAbs(imagePath), "Path should be absolute")
-				if tt.expectPathSuffix != "" {
-					assert.True(t, strings.HasPrefix(imagePath, tmpDir), "Path should be under pool directory")
-					assert.Equal(t, tt.imageName, filepath.Base(imagePath))
-				}
+				assert.True(t, strings.HasPrefix(imagePath, tmpDir), "Path should be under pool directory")
+				assert.Equal(t, tt.imageName, filepath.Base(imagePath))
 			}
 		})
 	}
@@ -82,8 +79,9 @@ func TestAllocateImageFileCreatesDirectory(t *testing.T) {
 	_, err := os.Stat(nonExistentPool)
 	require.True(t, os.IsNotExist(err), "Directory should not exist initially")
 
-	// Allocate image file
-	imagePath, err := pm.AllocateImageFile("test_image")
+	// Allocate image file (key must be 64 lowercase hex chars — a SHA-256 hash)
+	testKey := "a3f1e2d4b5c6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+	imagePath, err := pm.AllocateImageFile(testKey)
 
 	// Verify directory was created
 	assert.NoError(t, err)
@@ -265,47 +263,6 @@ func TestCreateCacheEntry(t *testing.T) {
 	data, err := os.ReadFile(checksumFile)
 	assert.NoError(t, err)
 	assert.Equal(t, checksum, string(data))
-}
-
-func TestGetImageNameFromURL(t *testing.T) {
-	tests := []struct {
-		expectedName string
-		imageURL     string
-		name         string
-	}{
-		{
-			expectedName: "ubuntu_20_04",
-			imageURL:     "https://minio.example.com/bucket/ubuntu-20.04.qcow2",
-			name:         "simple QCOW2 URL",
-		},
-		{
-			expectedName: "debian_11_0",
-			imageURL:     "https://minio.example.com/bucket/debian.11.0.raw",
-			name:         "URL with multiple dots",
-		},
-		{
-			expectedName: "centos_8_stream",
-			imageURL:     "https://minio.example.com/bucket/centos-8-stream.img",
-			name:         "URL with dashes",
-		},
-		{
-			expectedName: "image",
-			imageURL:     "https://minio.example.com/bucket/image",
-			name:         "URL with no extension",
-		},
-		{
-			expectedName: "ubuntu",
-			imageURL:     "https://minio.example.com/bucket/images/v1.0/ubuntu.qcow2",
-			name:         "URL with path components",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			name := GetImageNameFromURL(tt.imageURL)
-			assert.Equal(t, tt.expectedName, name)
-		})
-	}
 }
 
 func TestDeleteImage(t *testing.T) {

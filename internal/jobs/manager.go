@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ import (
 
 // Job represents a volume provisioning job.
 type Job struct {
+	mu             sync.RWMutex // protects all fields below
 	ID             string
 	CorrelationID  string
 	Status         types.JobStatus
@@ -41,43 +43,39 @@ type Job struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	cancelFunc     context.CancelFunc
-	downloadWeight float64 // fraction of total job time estimated for the download stage (0–1)
-	convertWeight  float64 // fraction of total job time estimated for the convert stage (0–1)
-	currentStage   string  // track current stage for ETA calculation
+	downloadWeight float64
+	convertWeight  float64
+	currentStage   string
 	stageStartTime time.Time
 }
 
 // UpdateProgress implements the ProgressUpdater interface.
-// stagePercent is 0–100 within the named stage; we report independent stage progress
-// with overall ETA calculated based on historical rates.
 func (j *Job) UpdateProgress(stage string, stagePercent float64, bytesProcessed, bytesTotal int64) {
 	now := time.Now()
 
-	// Detect stage change and reset stage timer
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
 	if j.currentStage != stage {
 		j.currentStage = stage
 		j.stageStartTime = now
 	}
 
-	// Calculate stage ETA based on current progress rate
 	var stageETA *int64
 	if stagePercent > 0 && stagePercent < 100 {
 		elapsedSec := now.Sub(j.stageStartTime).Seconds()
 		if elapsedSec > 0 {
-			// Estimate: (elapsed / percent_done) * percent_remaining
 			remainingPercent := 100 - stagePercent
 			etaSec := int64((elapsedSec / stagePercent) * remainingPercent)
 			stageETA = &etaSec
 		}
 	}
 
-	// Calculate overall progress and ETA
 	var overallPercent float64
 	var overallETA *int64
 	switch stage {
 	case "downloading":
 		overallPercent = stagePercent * j.downloadWeight
-		// Overall ETA = download stage ETA + estimated convert time
 		if stageETA != nil {
 			convertSec := int64(float64(*stageETA) * (j.convertWeight / j.downloadWeight))
 			totalETA := *stageETA + convertSec
@@ -85,7 +83,6 @@ func (j *Job) UpdateProgress(stage string, stagePercent float64, bytesProcessed,
 		}
 	case "converting":
 		overallPercent = j.downloadWeight*100 + stagePercent*j.convertWeight
-		// Overall ETA = convert stage ETA
 		if stageETA != nil {
 			overallETA = stageETA
 		}
@@ -108,7 +105,6 @@ func (j *Job) UpdateProgress(stage string, stagePercent float64, bytesProcessed,
 }
 
 // LibvirtPool is the interface Manager uses to interact with the image cache.
-// *libvirt.PoolManager satisfies this interface.
 type LibvirtPool interface {
 	CheckCache(cacheKey string) (*libvirt.ImageCache, error)
 	AllocateImageFile(cacheKey string) (string, error)
@@ -127,31 +123,34 @@ type Manager struct {
 	store       *storage.Store
 	semaphore   chan struct{}
 	mu          sync.RWMutex
-	evictCancel context.CancelFunc
+	bgCancel    context.CancelFunc
 }
+
+// maxConcurrentJobs is the semaphore capacity; must match api.maxConcurrentJobs.
+const maxConcurrentJobs = 2
 
 // NewManager creates a new job manager.
 func NewManager(minioClient *minio.Client, lvmManager *lvm.Manager,
 	libvirtPool LibvirtPool, store *storage.Store) *Manager {
-	evictCtx, evictCancel := context.WithCancel(context.Background())
+	bgCtx, bgCancel := context.WithCancel(context.Background())
 	m := &Manager{
 		minioClient: minioClient,
 		lvmManager:  lvmManager,
 		libvirtPool: libvirtPool,
 		store:       store,
 		jobs:        make(map[string]*Job),
-		semaphore:   make(chan struct{}, 2), // Max 2 concurrent operations
-		evictCancel: evictCancel,
+		semaphore:   make(chan struct{}, maxConcurrentJobs),
+		bgCancel:    bgCancel,
 	}
 	if libvirtPool != nil {
-		maxAge := parseDurationEnv("CACHE_MAX_AGE", 168*time.Hour)         // 7 days
-		interval := parseDurationEnv("CACHE_EVICTION_INTERVAL", time.Hour) // 1 hour
-		go m.runEvictionLoop(evictCtx, maxAge, interval)
+		maxAge := parseDurationEnv("CACHE_MAX_AGE", 168*time.Hour)
+		interval := parseDurationEnv("CACHE_EVICTION_INTERVAL", time.Hour)
+		go m.runEvictionLoop(bgCtx, maxAge, interval)
 	}
+	go m.runCleanupLoop(bgCtx)
 	return m
 }
 
-// parseDurationEnv reads a duration from an environment variable, falling back to defaultVal.
 func parseDurationEnv(name string, defaultVal time.Duration) time.Duration {
 	raw := os.Getenv(name)
 	if raw == "" {
@@ -166,7 +165,6 @@ func parseDurationEnv(name string, defaultVal time.Duration) time.Duration {
 	return d
 }
 
-// runEvictionLoop periodically evicts cached images older than maxAge.
 func (m *Manager) runEvictionLoop(ctx context.Context, maxAge, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -182,10 +180,23 @@ func (m *Manager) runEvictionLoop(ctx context.Context, maxAge, interval time.Dur
 	}
 }
 
-// Stop signals the background eviction goroutine to exit.
+func (m *Manager) runCleanupLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.CleanupCompletedJobs()
+		}
+	}
+}
+
+// Stop signals all background goroutines to exit.
 func (m *Manager) Stop() {
-	if m.evictCancel != nil {
-		m.evictCancel()
+	if m.bgCancel != nil {
+		m.bgCancel()
 	}
 }
 
@@ -201,56 +212,67 @@ func (m *Manager) DeleteCachedImage(cacheKey string) error {
 	return nil
 }
 
-// syncToDatabase persists job state to the database
+// syncToDatabase persists a snapshot of job state to the database.
 func (m *Manager) syncToDatabase(ctx context.Context, job *Job) {
 	if m.store == nil {
-		return // Database not available
+		return
 	}
 
-	requestJSON, err := json.Marshal(job.Request)
+	// Snapshot fields under the job lock
+	job.mu.RLock()
+	status := job.Status
+	request := job.Request
+	progress := job.Progress
+	jobError := job.Error
+	updatedAt := job.UpdatedAt
+	createdAt := job.CreatedAt
+	jobID := job.ID
+	job.mu.RUnlock()
+
+	requestJSON, err := json.Marshal(request)
 	if err != nil {
 		logrus.WithError(err).Error("Failed to marshal job request for database sync")
 		return
 	}
+
 	progressJSON := ""
-	if job.Progress != nil {
-		if data, err := json.Marshal(job.Progress); err == nil {
+	if progress != nil {
+		if data, err := json.Marshal(progress); err == nil {
 			progressJSON = string(data)
 		}
 	}
 
 	errorMessage := ""
-	if job.Error != nil {
-		errorMessage = job.Error.Error()
+	if jobError != nil {
+		errorMessage = jobError.Error()
 	}
 
-	completedAt := (*time.Time)(nil)
-	if job.Status == types.StatusCompleted || job.Status == types.StatusFailed || job.Status == types.StatusCancelled {
-		completedAt = &job.UpdatedAt
+	var completedAt *time.Time
+	if status == types.StatusCompleted || status == types.StatusFailed || status == types.StatusCancelled {
+		completedAt = &updatedAt
 	}
 
 	record := &storage.JobRecord{
-		ID:           job.ID,
-		Status:       string(job.Status),
+		ID:           jobID,
+		Status:       string(status),
 		RequestJSON:  string(requestJSON),
 		ProgressJSON: progressJSON,
 		ErrorMessage: errorMessage,
-		RetryCount:   0, // TODO: Integrate retry count once retry logic is implemented
-		CreatedAt:    job.CreatedAt,
-		UpdatedAt:    job.UpdatedAt,
+		RetryCount:   0,
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
 		CompletedAt:  completedAt,
 	}
 
 	if err := m.store.SaveJob(ctx, record); err != nil {
-		logrus.WithError(err).WithField("job_id", job.ID).Error("Failed to sync job to database")
+		logrus.WithError(err).WithField("job_id", jobID).Error("Failed to sync job to database")
 	}
 }
 
-// RecoverJobs marks any in-progress jobs from previous runs as failed
-// This should be called during startup to clean up jobs interrupted by daemon restart
+// RecoverJobs marks any in-progress jobs from previous runs as failed.
 func (m *Manager) RecoverJobs() error {
 	if m.store == nil {
-		return nil // Database not available
+		return nil
 	}
 
 	logrus.Info("Recovering jobs from previous run...")
@@ -276,10 +298,8 @@ func (m *Manager) StartJob(ctx context.Context, req types.ProvisionRequest) (str
 	jobID := uuid.New().String()
 	span.SetAttributes(attribute.String("job.id", jobID))
 
-	// Create detached context with timeout - don't use request context as parent
-	// because it will be canceled when the HTTP request completes
-	// #nosec G118 // cancel is stored in job.cancelFunc for later use
-	jobCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // 30 minute timeout
+	// Detached context — the HTTP request context is cancelled when the response is sent.
+	jobCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 
 	job := &Job{
 		ID:            jobID,
@@ -295,17 +315,15 @@ func (m *Manager) StartJob(ctx context.Context, req types.ProvisionRequest) (str
 	m.jobs[jobID] = job
 	m.mu.Unlock()
 
-	// Persist to database - use background context to avoid request context cancellation
 	m.syncToDatabase(context.Background(), job) //nolint:contextcheck
 
-	// Start job in background
-	go m.runJob(jobCtx, job) //nolint:contextcheck
+	go m.runJob(jobCtx, job) //nolint:contextcheck // intentional: job outlives the HTTP request
 
 	span.SetStatus(codes.Ok, "job started successfully")
 	return jobID, nil
 }
 
-// GetJobStatus returns the status of a job
+// GetJobStatus returns the status of a job.
 func (m *Manager) GetJobStatus(jobID string) (*types.StatusResponse, error) {
 	m.mu.RLock()
 	job, exists := m.jobs[jobID]
@@ -315,6 +333,9 @@ func (m *Manager) GetJobStatus(jobID string) (*types.StatusResponse, error) {
 		return nil, fmt.Errorf("job not found: %s", jobID)
 	}
 
+	job.mu.RLock()
+	defer job.mu.RUnlock()
+
 	response := &types.StatusResponse{
 		JobID:         job.ID,
 		Status:        job.Status,
@@ -323,75 +344,54 @@ func (m *Manager) GetJobStatus(jobID string) (*types.StatusResponse, error) {
 		CreatedAt:     job.CreatedAt,
 		UpdatedAt:     job.UpdatedAt,
 	}
-
 	if job.Error != nil {
 		response.Error = job.Error.Error()
 	}
-
-	// Include cache information for completed jobs
 	if job.Status == types.StatusCompleted {
-		response.CacheHit = &job.CacheHit
+		cacheHit := job.CacheHit
+		response.CacheHit = &cacheHit
 		response.ImagePath = job.ImagePath
 	}
 
 	return response, nil
 }
 
-// CancelJob cancels a running job
+// CancelJob cancels a running job.
 func (m *Manager) CancelJob(ctx context.Context, jobID string) error {
-	m.mu.Lock()
+	m.mu.RLock()
 	job, exists := m.jobs[jobID]
+	m.mu.RUnlock()
+
 	if !exists {
-		m.mu.Unlock()
 		return fmt.Errorf("job not found: %s", jobID)
 	}
 
+	job.mu.Lock()
 	if job.Status != types.StatusRunning && job.Status != types.StatusPending {
-		m.mu.Unlock()
-		return fmt.Errorf("job cannot be cancelled: %s", job.Status)
+		status := job.Status
+		job.mu.Unlock()
+		return fmt.Errorf("job cannot be cancelled: %s", status)
 	}
-
 	job.cancelFunc()
 	job.Status = types.StatusCancelled
 	job.UpdatedAt = time.Now()
-	m.mu.Unlock()
+	job.mu.Unlock()
 
-	// Persist cancellation to database
 	m.syncToDatabase(ctx, job)
-
 	return nil
 }
 
-// runJob executes a provisioning job
+// runJob executes a provisioning job.
 func (m *Manager) runJob(ctx context.Context, job *Job) {
-	// Debug: Check if context is already canceled
-	select {
-	case <-ctx.Done():
-		logrus.WithFields(logrus.Fields{
-			"job_id": job.ID,
-			"error":  ctx.Err(),
-		}).Error("runJob called with already canceled context")
-	default:
-		logrus.WithField("job_id", job.ID).Info("runJob started with valid context")
-	}
-
-	// Check if dependencies are available (for unit tests that don't initialize them)
 	if m.minioClient == nil || m.lvmManager == nil || m.libvirtPool == nil || m.store == nil {
-		// In test environments, just mark as completed without doing work
-		// This prevents panics while allowing tests to pass
-		if isRunningTests() {
-			job.Status = types.StatusCompleted
-			job.UpdatedAt = time.Now()
-			return
-		}
-		// In production, fail the job
+		job.mu.Lock()
 		job.Status = types.StatusFailed
 		job.Error = fmt.Errorf("job manager dependencies not initialized")
 		job.UpdatedAt = time.Now()
+		job.mu.Unlock()
 		return
 	}
 
-	// Start span for job lifecycle
 	tracer := otel.Tracer("libvirt-volume-provisioner")
 	ctx, span := tracer.Start(ctx, "runJob",
 		trace.WithAttributes(
@@ -401,101 +401,104 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 		))
 	defer span.End()
 
-	// Acquire semaphore (limit concurrent operations)
 	select {
 	case m.semaphore <- struct{}{}:
 		defer func() { <-m.semaphore }()
 	case <-ctx.Done():
+		job.mu.Lock()
 		job.Status = types.StatusFailed
 		job.UpdatedAt = time.Now()
+		job.mu.Unlock()
 		m.syncToDatabase(ctx, job)
 		span.SetStatus(codes.Error, "job cancelled during semaphore acquisition")
 		return
 	}
 
-	// Debug: Check context before setting running status
-	select {
-	case <-ctx.Done():
-		logrus.WithFields(logrus.Fields{
-			"job_id": job.ID,
-			"stage":  "before_running_sync",
-			"error":  ctx.Err(),
-		}).Error("Context canceled before running sync")
+	// Fail fast if context was already cancelled before we acquired the semaphore.
+	if err := ctx.Err(); err != nil {
+		job.mu.Lock()
 		job.Status = types.StatusFailed
-		job.Error = fmt.Errorf("context canceled before running sync: %w", ctx.Err())
+		job.Error = err
 		job.UpdatedAt = time.Now()
+		job.mu.Unlock()
 		m.syncToDatabase(ctx, job)
 		return
-	default:
-		logrus.WithField("job_id", job.ID).Info("Context valid before running sync")
 	}
 
+	job.mu.Lock()
 	job.Status = types.StatusRunning
 	job.UpdatedAt = time.Now()
+	job.mu.Unlock()
 	m.syncToDatabase(ctx, job)
 
 	defer func() {
+		job.mu.Lock()
 		job.UpdatedAt = time.Now()
+		status := job.Status
+		jobErr := job.Error
+		job.mu.Unlock()
+
 		m.syncToDatabase(ctx, job)
-		switch job.Status {
-		case types.StatusPending, types.StatusRunning, types.StatusCancelled:
-			// No action needed for these statuses
+
+		switch status {
 		case types.StatusCompleted:
 			span.SetStatus(codes.Ok, "job completed successfully")
 		case types.StatusFailed:
-			span.SetStatus(codes.Error, job.Error.Error())
+			if jobErr != nil {
+				span.SetStatus(codes.Error, jobErr.Error())
+			}
+		case types.StatusPending, types.StatusRunning, types.StatusCancelled:
 		}
 	}()
 
-	// Execute provisioning steps
-	err := m.ProvisionVolume(ctx, job)
-	if err != nil {
+	if err := m.ProvisionVolume(ctx, job); err != nil {
+		job.mu.Lock()
 		job.Status = types.StatusFailed
 		job.Error = err
+		job.mu.Unlock()
 		return
 	}
 
+	job.mu.Lock()
 	job.Status = types.StatusCompleted
+	job.mu.Unlock()
 }
 
-// ProvisionVolume performs the actual volume provisioning
+// ProvisionVolume performs the actual volume provisioning.
 func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	tracer := otel.Tracer("job-manager")
 
-	// Check if dependencies are available (for unit tests that don't initialize them)
 	if m.minioClient == nil || m.lvmManager == nil || m.libvirtPool == nil || m.store == nil {
 		return fmt.Errorf("job manager dependencies not initialized")
 	}
 
+	job.mu.RLock()
 	req := job.Request
+	job.mu.RUnlock()
 
-	// Track provisioning state for rollback
 	volumeCreated := false
 	provisionFailed := false
 
-	// Get historical rates to estimate stage weights dynamically
 	downloadRate := m.store.GetAverageRate(ctx, "download", timing.DefaultDownloadRate)
 	convertRate := m.store.GetAverageRate(ctx, "convert", timing.DefaultConvertRate)
 	estimator := timing.NewEstimator(downloadRate, convertRate)
 
-	// Estimate weights based on image sizes.
-	// For qcow2: download is compressed file (~20% of raw), convert writes full volume.
-	// For raw: download and convert are the same size.
 	var downloadSize, convertSize int64
 	convertSize = int64(req.VolumeSizeGB) * 1024 * 1024 * 1024
 	if req.ImageType == "qcow2" {
-		// qcow2 files are typically compressed to ~20% of raw size
 		downloadSize = convertSize / 5
 	} else {
 		downloadSize = convertSize
 	}
 
-	job.downloadWeight, job.convertWeight = estimator.EstimateWeights(downloadSize, convertSize)
+	dlWeight, cvWeight := estimator.EstimateWeights(downloadSize, convertSize)
+	job.mu.Lock()
+	job.downloadWeight = dlWeight
+	job.convertWeight = cvWeight
+	job.mu.Unlock()
 
 	job.UpdateProgress("initializing", 0, 0, 0)
 
-	// Step 1: Check image cache or download
-	// Create span for image acquisition
 	imageCtx, imageSpan := tracer.Start(ctx, "getOrDownloadImage",
 		trace.WithAttributes(
 			attribute.String("image.url", req.ImageURL),
@@ -512,16 +515,16 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	imageSpan.SetAttributes(attribute.String("image.path", imagePath))
 	imageSpan.SetStatus(codes.Ok, "image acquired successfully")
 
-	// If the image was served from cache there was no download phase, so the full
-	// progress range belongs to the convert stage.
-	if job.CacheHit {
+	job.mu.RLock()
+	cacheHit := job.CacheHit
+	job.mu.RUnlock()
+	if cacheHit {
+		job.mu.Lock()
 		job.downloadWeight = 0
 		job.convertWeight = 1
+		job.mu.Unlock()
 	}
 
-	// Step 2: Create LVM volume
-
-	// Create span for volume creation
 	volumeCtx, volumeSpan := tracer.Start(ctx, "createVolume",
 		trace.WithAttributes(
 			attribute.String("volume.name", req.VolumeName),
@@ -538,7 +541,6 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	volumeCreated = true
 	volumeSpan.SetStatus(codes.Ok, "volume created successfully")
 
-	// Rollback defer: Delete volume if provisioning fails after creation
 	defer func() {
 		if volumeCreated && provisionFailed {
 			logrus.WithFields(logrus.Fields{
@@ -552,14 +554,13 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 					"volume_name": req.VolumeName,
 				}).Error("Rollback failed: could not delete volume")
 
-				// Combine errors: original error + rollback failure
+				job.mu.Lock()
 				job.Error = fmt.Errorf("provision failed + rollback failed: %w", deleteErr)
+				job.mu.Unlock()
 			}
 		}
 	}()
 
-	// Step 3: Convert and populate volume
-	// Create span for volume population
 	populateCtx, populateSpan := tracer.Start(ctx, "populateVolume",
 		trace.WithAttributes(
 			attribute.String("volume.name", req.VolumeName),
@@ -578,9 +579,7 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	}
 	populateSpan.SetStatus(codes.Ok, "volume populated successfully")
 
-	// Step 4: Finalize
 	job.UpdateProgress("finalizing", 100, 0, 0)
-
 	return nil
 }
 
@@ -591,10 +590,8 @@ func urlCacheKey(rawURL string) string {
 }
 
 // parseChecksumFile extracts a 64-char hex SHA256 hash from checksum file content.
-// Handles both raw-hash format ("abc...64chars\n") and sha256sum(1) format ("abc...64chars  filename").
 func parseChecksumFile(data []byte) (string, error) {
 	checksum := strings.TrimSpace(string(data))
-	// sha256sum(1) produces "HASH  filename"; take only the first field
 	if fields := strings.Fields(checksum); len(fields) > 0 {
 		checksum = fields[0]
 	}
@@ -605,22 +602,15 @@ func parseChecksumFile(data []byte) (string, error) {
 }
 
 // getOrDownloadImage checks cache or downloads image and returns the path.
-// The cache key is always derived from the URL (stable identifier for the image source).
-// If a remote checksum is available from MinIO, it is compared against the stored checksum
-// of the cached file; a mismatch triggers a fresh download. After any download, the local
-// checksum is computed and stored so future requests can verify cache freshness.
 func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionRequest, job *Job) (string, error) {
 	tracer := otel.Tracer("job-manager")
 
-	// Check if dependencies are available (for unit tests that don't initialize them)
 	if m.minioClient == nil || m.lvmManager == nil || m.libvirtPool == nil || m.store == nil {
 		return "", fmt.Errorf("job manager dependencies not initialized")
 	}
 
-	// Cache key is always the URL hash — stable filename regardless of checksum availability
 	cacheKey := urlCacheKey(req.ImageURL)
 
-	// Fetch remote checksum from MinIO (best-effort; may not exist)
 	checksumCtx, checksumSpan := tracer.Start(ctx, "getImageChecksum",
 		trace.WithAttributes(attribute.String("image.url", req.ImageURL)))
 	remoteChecksum, remoteChecksumErr := m.getImageChecksum(checksumCtx, req.ImageURL)
@@ -635,7 +625,6 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 	}
 	checksumSpan.End()
 
-	// Check local cache
 	_, cacheSpan := tracer.Start(ctx, "checkImageCache",
 		trace.WithAttributes(
 			attribute.String("cache.key", cacheKey),
@@ -649,7 +638,6 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 
 	if cachedImage != nil {
 		if !hasRemoteChecksum {
-			// No remote checksum to compare against; trust the cached image
 			cacheSpan.SetAttributes(
 				attribute.String("cache.result", "hit_unverified"),
 				attribute.String("cache.path", cachedImage.Path),
@@ -660,15 +648,15 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 				"job_id":    job.ID,
 				"image_url": req.ImageURL,
 				"cache_key": cacheKey,
-				"cache_hit": true,
 			}).Info("Using cached image (remote checksum unavailable for verification)")
+			job.mu.Lock()
 			job.CacheHit = true
 			job.ImagePath = cachedImage.Path
+			job.mu.Unlock()
 			return cachedImage.Path, nil
 		}
 
 		if cachedImage.Checksum == remoteChecksum {
-			// Stored checksum matches remote: cache is fresh
 			cacheSpan.SetAttributes(
 				attribute.String("cache.result", "hit"),
 				attribute.String("cache.path", cachedImage.Path),
@@ -681,14 +669,14 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 				"image_url":   req.ImageURL,
 				"checksum":    remoteChecksum,
 				"cached_path": cachedImage.Path,
-				"cache_hit":   true,
 			}).Info("Using cached image (checksum verified)")
+			job.mu.Lock()
 			job.CacheHit = true
 			job.ImagePath = cachedImage.Path
+			job.mu.Unlock()
 			return cachedImage.Path, nil
 		}
 
-		// Checksum mismatch: cached image is stale
 		logrus.WithFields(logrus.Fields{
 			"job_id":          job.ID,
 			"image_url":       req.ImageURL,
@@ -702,11 +690,9 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 	cacheSpan.SetStatus(codes.Ok, "cache miss")
 	cacheSpan.End()
 
-	// Image not cached or stale; download fresh copy
 	logrus.WithFields(logrus.Fields{
 		"job_id":    job.ID,
 		"image_url": req.ImageURL,
-		"cache_hit": false,
 	}).Info("Image not cached, downloading")
 
 	_, allocSpan := tracer.Start(ctx, "allocateImageFile",
@@ -724,15 +710,8 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 
 	job.UpdateProgress("downloading", 0, 0, 0)
 
-	select {
-	case <-ctx.Done():
-		logrus.WithFields(logrus.Fields{
-			"job_id": job.ID,
-			"error":  ctx.Err(),
-		}).Error("Context canceled before download")
-		return "", fmt.Errorf("context canceled before download: %w", ctx.Err())
-	default:
-		logrus.WithField("job_id", job.ID).Info("Starting download with valid context")
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("context canceled before download: %w", err)
 	}
 
 	downloadStart := time.Now()
@@ -753,8 +732,6 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 		}
 	}
 
-	// Compute checksum of the downloaded image and store it as the cache entry.
-	// This checksum is used on future requests to detect stale cached images.
 	localChecksum, checksumErr := libvirt.CalculateChecksum(imagePath)
 	if checksumErr != nil {
 		logrus.WithError(checksumErr).Warn("Failed to calculate local checksum for downloaded image")
@@ -771,14 +748,15 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 		"remote_checksum": remoteChecksum,
 	}).Info("Image downloaded and cached")
 
+	job.mu.Lock()
 	job.CacheHit = false
 	job.ImagePath = imagePath
+	job.mu.Unlock()
 	return imagePath, nil
 }
 
-// getImageChecksum retrieves the SHA256 checksum from MinIO .sha256 file
+// getImageChecksum retrieves the SHA256 checksum from MinIO .sha256 file.
 func (m *Manager) getImageChecksum(ctx context.Context, imageURL string) (string, error) {
-	// Parse the image URL to extract bucket and object
 	u, err := url.Parse(imageURL)
 	if err != nil {
 		return "", fmt.Errorf("invalid image URL: %w", err)
@@ -793,7 +771,6 @@ func (m *Manager) getImageChecksum(ctx context.Context, imageURL string) (string
 	imageObjectName := strings.Join(pathParts[1:], "/")
 	checksumObjectName := imageObjectName + ".sha256"
 
-	// Try to get the checksum file content
 	checksumData, err := m.minioClient.GetObjectContent(ctx, bucketName, checksumObjectName)
 	if err != nil {
 		return "", fmt.Errorf("checksum file not found or unreadable: %w", err)
@@ -807,21 +784,24 @@ func (m *Manager) getImageChecksum(ctx context.Context, imageURL string) (string
 	return checksum, nil
 }
 
-// GetActiveJobs returns the count of active jobs
+// GetActiveJobs returns the count of active jobs.
 func (m *Manager) GetActiveJobs() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	count := 0
 	for _, job := range m.jobs {
-		if job.Status == types.StatusRunning || job.Status == types.StatusPending {
+		job.mu.RLock()
+		s := job.Status
+		job.mu.RUnlock()
+		if s == types.StatusRunning || s == types.StatusPending {
 			count++
 		}
 	}
 	return count
 }
 
-// GetJobCacheInfo returns cache information for a completed job
+// GetJobCacheInfo returns cache information for a completed job.
 func (m *Manager) GetJobCacheInfo(jobID string) (bool, string, error) {
 	m.mu.RLock()
 	job, exists := m.jobs[jobID]
@@ -831,20 +811,20 @@ func (m *Manager) GetJobCacheInfo(jobID string) (bool, string, error) {
 		return false, "", fmt.Errorf("job not found: %s", jobID)
 	}
 
+	job.mu.RLock()
+	defer job.mu.RUnlock()
+
 	if job.Status != types.StatusCompleted {
 		return false, "", fmt.Errorf("job not completed: %s", job.Status)
 	}
-
 	return job.CacheHit, job.ImagePath, nil
 }
 
-// ListCachedImages returns a list of all cached images
+// ListCachedImages returns a list of all cached images.
 func (m *Manager) ListCachedImages() ([]*libvirt.ImageCache, error) {
-	// Check if dependencies are available (for unit tests that don't initialize them)
 	if m.libvirtPool == nil {
 		return nil, fmt.Errorf("job manager dependencies not initialized")
 	}
-
 	images, err := m.libvirtPool.ListCachedImages()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list cached images: %w", err)
@@ -852,47 +832,42 @@ func (m *Manager) ListCachedImages() ([]*libvirt.ImageCache, error) {
 	return images, nil
 }
 
-// FetchImageToCache starts a job to fetch and cache an image without creating a volume
+// FetchImageToCache starts a job to fetch and cache an image without creating a volume.
 func (m *Manager) FetchImageToCache(ctx context.Context, req types.FetchImageToCacheRequest) (string, error) {
 	jobID := uuid.New().String()
 
+	// Detached context — the HTTP request context is cancelled when the response is sent.
+	jobCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+
 	job := &Job{
-		ID:        jobID,
-		Status:    types.StatusPending,
-		Request:   types.ProvisionRequest{ImageURL: req.ImageURL}, // Wrap in ProvisionRequest for compatibility
-		Progress:  &types.ProgressInfo{Stage: "initializing", StagePercent: 0, OverallPercent: 0},
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		ID:         jobID,
+		Status:     types.StatusPending,
+		Request:    types.ProvisionRequest{ImageURL: req.ImageURL},
+		Progress:   &types.ProgressInfo{Stage: "initializing", StagePercent: 0, OverallPercent: 0},
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+		cancelFunc: cancel,
 	}
 
 	m.mu.Lock()
 	m.jobs[jobID] = job
 	m.mu.Unlock()
 
-	// Start the job asynchronously with derived context
-	go m.runCacheJob(ctx, job)
-
+	go m.runCacheJob(jobCtx, job) //nolint:contextcheck // intentional: job outlives the HTTP request
 	return jobID, nil
 }
 
-// runCacheJob executes a cache-only job (download image to cache without volume creation)
+// runCacheJob executes a cache-only job (download image to cache without volume creation).
 func (m *Manager) runCacheJob(ctx context.Context, job *Job) {
-	// Check if dependencies are available (for unit tests that don't initialize them)
 	if m.minioClient == nil || m.lvmManager == nil || m.libvirtPool == nil || m.store == nil {
-		// In test environments, just mark as completed without doing work
-		if isRunningTests() {
-			job.Status = types.StatusCompleted
-			job.UpdatedAt = time.Now()
-			return
-		}
-		// In production, fail the job
+		job.mu.Lock()
 		job.Status = types.StatusFailed
 		job.Error = fmt.Errorf("job manager dependencies not initialized")
 		job.UpdatedAt = time.Now()
+		job.mu.Unlock()
 		return
 	}
 
-	// Start span for cache job
 	tracer := otel.Tracer("libvirt-volume-provisioner")
 	ctx, span := tracer.Start(ctx, "runCacheJob",
 		trace.WithAttributes(
@@ -901,77 +876,91 @@ func (m *Manager) runCacheJob(ctx context.Context, job *Job) {
 		))
 	defer span.End()
 
-	// #nosec G118 // cancel is stored in job.cancelFunc for later use
-	jobCtx, cancel := context.WithCancel(ctx)
-	job.cancelFunc = cancel
-
-	// Acquire semaphore (limit concurrent operations)
 	select {
 	case m.semaphore <- struct{}{}:
 		defer func() { <-m.semaphore }()
-	case <-jobCtx.Done():
+	case <-ctx.Done():
+		job.mu.Lock()
 		job.Status = types.StatusFailed
 		job.UpdatedAt = time.Now()
-		m.syncToDatabase(jobCtx, job)
+		job.mu.Unlock()
+		m.syncToDatabase(ctx, job)
 		return
 	}
 
+	job.mu.Lock()
 	job.Status = types.StatusRunning
 	job.UpdatedAt = time.Now()
-	m.syncToDatabase(jobCtx, job)
+	job.mu.Unlock()
+	m.syncToDatabase(ctx, job)
 
 	defer func() {
+		job.mu.Lock()
 		job.UpdatedAt = time.Now()
-		m.syncToDatabase(jobCtx, job)
-		switch job.Status {
-		case types.StatusPending, types.StatusRunning, types.StatusCancelled:
-			// No action needed for these statuses
+		status := job.Status
+		jobErr := job.Error
+		job.mu.Unlock()
+
+		m.syncToDatabase(ctx, job)
+
+		switch status {
 		case types.StatusCompleted:
 			span.SetStatus(codes.Ok, "cache job completed successfully")
 		case types.StatusFailed:
-			span.SetStatus(codes.Error, job.Error.Error())
+			if jobErr != nil {
+				span.SetStatus(codes.Error, jobErr.Error())
+			}
+		case types.StatusPending, types.StatusRunning, types.StatusCancelled:
 		}
 	}()
 
-	// Get or download image to cache
-	imagePath, err := m.getOrDownloadImage(jobCtx, job.Request, job)
+	job.mu.RLock()
+	req := job.Request
+	job.mu.RUnlock()
+
+	imagePath, err := m.getOrDownloadImage(ctx, req, job)
 	if err != nil {
+		job.mu.Lock()
 		job.Status = types.StatusFailed
 		job.Error = err
+		job.mu.Unlock()
 		return
 	}
 
+	job.mu.Lock()
 	job.ImagePath = imagePath
-	job.CacheHit = true // Since we always cache, this is effectively a cache hit for future use
+	job.CacheHit = true
 	job.Status = types.StatusCompleted
+	job.mu.Unlock()
 }
 
-// CleanupCompletedJobs removes old completed jobs (keep last 100)
+// CleanupCompletedJobs removes old completed jobs, keeping the 100 most recent.
 func (m *Manager) CleanupCompletedJobs() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Keep only recent jobs
-	completed := make([]string, 0)
+	type entry struct {
+		id        string
+		createdAt time.Time
+	}
+	var completed []entry
 	for id, job := range m.jobs {
-		if job.Status == types.StatusCompleted || job.Status == types.StatusFailed || job.Status == types.StatusCancelled {
-			completed = append(completed, id)
+		job.mu.RLock()
+		s := job.Status
+		t := job.CreatedAt
+		job.mu.RUnlock()
+		if s == types.StatusCompleted || s == types.StatusFailed || s == types.StatusCancelled {
+			completed = append(completed, entry{id: id, createdAt: t})
 		}
 	}
 
-	// Keep only the most recent 100 completed jobs
 	if len(completed) > 100 {
+		// Sort oldest-first so we delete the oldest entries
+		sort.Slice(completed, func(i, j int) bool {
+			return completed[i].createdAt.Before(completed[j].createdAt)
+		})
 		for i := 0; i < len(completed)-100; i++ {
-			delete(m.jobs, completed[i])
+			delete(m.jobs, completed[i].id)
 		}
 	}
-}
-
-// isRunningTests detects if we're running in a test environment
-func isRunningTests() bool {
-	// Check for common test environment indicators
-	return os.Getenv("GO_TEST") != "" ||
-		strings.HasSuffix(os.Args[0], ".test") ||
-		strings.Contains(os.Getenv("GOPATH"), "test") ||
-		os.Getenv("GO_ENV") == "test"
 }

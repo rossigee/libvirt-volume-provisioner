@@ -204,8 +204,8 @@ func (m *Manager) populateVolumeOnce(
 	// Get the device path for the LVM volume
 	devicePath := fmt.Sprintf("/dev/%s/%s", m.vgName, volumeName)
 
-	// Verify the device exists
-	if _, err := exec.CommandContext(ctx, "test", "-b", devicePath).CombinedOutput(); err != nil {
+	// Verify the block device exists
+	if fi, err := os.Stat(devicePath); err != nil || fi.Mode()&os.ModeDevice == 0 {
 		return fmt.Errorf("LVM volume device does not exist: %s", devicePath)
 	}
 
@@ -514,7 +514,10 @@ func (m *Manager) validateExistingVolume(ctx context.Context, volumeName string,
 	}
 	// Note: Larger volumes are acceptable - no need to reject them
 
-	// Check if volume is active/available
+	// Check if volume is active/available (field 4 of lvs attribute string)
+	if len(info.Attributes) < 5 {
+		return fmt.Errorf("unexpected lvs attribute format %q", info.Attributes)
+	}
 	if info.Attributes[4] != 'a' && info.Attributes[4] != '-' {
 		return fmt.Errorf("volume state '%c' not suitable for reuse", info.Attributes[4])
 	}

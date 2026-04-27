@@ -3,7 +3,7 @@
 package auth
 
 import (
-	"crypto/tls"
+	"crypto/subtle"
 	"crypto/x509"
 	"fmt"
 	"os"
@@ -16,8 +16,8 @@ import (
 // Validator handles authentication validation
 type Validator struct {
 	clientCAs      *x509.CertPool
-	clientCALoaded bool            // Whether client CA certificates were loaded
-	apiTokens      map[string]bool // Simple token validation
+	clientCALoaded bool
+	apiTokens      map[string]bool
 }
 
 // NewValidator creates a new authentication validator
@@ -27,14 +27,11 @@ func NewValidator() (*Validator, error) {
 		apiTokens: make(map[string]bool),
 	}
 
-	// Load client CA certificates
-	err := validator.loadClientCAs()
-	if err != nil {
+	if err := validator.loadClientCAs(); err != nil {
 		return nil, fmt.Errorf("failed to load client CAs: %w", err)
 	}
 
-	// Load API tokens
-	if err = validator.loadAPITokens(); err != nil {
+	if err := validator.loadAPITokens(); err != nil {
 		return nil, fmt.Errorf("failed to load API tokens: %w", err)
 	}
 
@@ -45,24 +42,26 @@ func NewValidator() (*Validator, error) {
 func (v *Validator) loadClientCAs() error {
 	caCertPath := os.Getenv("CLIENT_CA_CERT")
 	if caCertPath == "" {
-		caCertPath = "/etc/ssl/certs/ca-certificates.crt"
-	}
-
-	// #nosec G703 // Path is controlled by admin via environment variable
-	if _, err := os.Stat(caCertPath); os.IsNotExist(err) {
-		// For development, allow unauthenticated access
+		// No client CA configured; mTLS client cert auth is disabled
 		v.clientCALoaded = false
 		return nil
 	}
 
-	//nolint:gosec // File path is controlled by admin via environment variable
+	if _, err := os.Stat(caCertPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("CLIENT_CA_CERT file not found: %s", caCertPath)
+		}
+		return fmt.Errorf("failed to stat CLIENT_CA_CERT %s: %w", caCertPath, err)
+	}
+
+	//nolint:gosec // Path is controlled by admin via environment variable
 	caCert, err := os.ReadFile(caCertPath)
 	if err != nil {
 		return fmt.Errorf("failed to read CA cert: %w", err)
 	}
 
 	if !v.clientCAs.AppendCertsFromPEM(caCert) {
-		return fmt.Errorf("failed to parse CA cert")
+		return fmt.Errorf("failed to parse CA cert: no valid PEM blocks in %s", caCertPath)
 	}
 
 	v.clientCALoaded = true
@@ -77,26 +76,27 @@ func (v *Validator) loadAPITokens() error {
 		tokenFile = "/etc/libvirt-volume-provisioner/tokens"
 	}
 
-	// #nosec G703 // Default configuration file path, not user-controlled
-	if _, err := os.Stat(tokenFile); os.IsNotExist(err) {
-		// For development, add a default token
-		v.apiTokens["dev-token-12345"] = true
-		return nil
+	if _, err := os.Stat(tokenFile); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("API token file not found: %s (set API_TOKENS_FILE env var)", tokenFile)
+		}
+		return fmt.Errorf("failed to stat API token file %s: %w", tokenFile, err)
 	}
 
-	//nolint:gosec // File path is controlled by admin via environment variable
+	//nolint:gosec // Path is controlled by admin via environment variable
 	content, err := os.ReadFile(tokenFile)
 	if err != nil {
 		return fmt.Errorf("failed to read API tokens: %w", err)
 	}
 
-	// Simple token list (one per line)
-	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
-		token := strings.TrimSpace(line)
-		if token != "" {
+	for _, line := range strings.Split(string(content), "\n") {
+		if token := strings.TrimSpace(line); token != "" && !strings.HasPrefix(token, "#") {
 			v.apiTokens[token] = true
 		}
+	}
+
+	if len(v.apiTokens) == 0 {
+		return fmt.Errorf("API token file %s contains no valid tokens", tokenFile)
 	}
 
 	return nil
@@ -105,22 +105,18 @@ func (v *Validator) loadAPITokens() error {
 // Middleware returns Gin middleware for authentication
 func (v *Validator) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Check for API token in header
 		if v.validateAPIToken(c) {
 			c.Next()
 			return
 		}
 
-		// Check for client certificate
-		if tlsConn, ok := c.Request.Context().Value("tls-conn").(*tls.Conn); ok {
-			if len(tlsConn.ConnectionState().PeerCertificates) > 0 {
-				// Certificate validation is handled by TLS config
-				c.Next()
-				return
-			}
+		// Check for a verified client certificate (populated by net/http for TLS connections)
+		if c.Request.TLS != nil && len(c.Request.TLS.PeerCertificates) > 0 {
+			// Certificate validation is handled at the TLS layer (ClientAuth: VerifyClientCertIfGiven)
+			c.Next()
+			return
 		}
 
-		// No valid authentication found
 		c.AbortWithStatusJSON(401, types.ErrorResponse{
 			Error:   "authentication required",
 			Message: "provide valid API token or client certificate",
@@ -130,21 +126,27 @@ func (v *Validator) Middleware() gin.HandlerFunc {
 }
 
 // validateAPIToken validates API token from Authorization or X-API-Token headers
+// using constant-time comparison to prevent timing attacks.
 func (v *Validator) validateAPIToken(c *gin.Context) bool {
+	var token string
+
 	authHeader := c.GetHeader("Authorization")
-
-	// Check for Bearer token in Authorization header
-	if authHeader != "" && len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-		token := authHeader[7:]
-		return v.apiTokens[token]
+	if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+		token = authHeader[7:]
+	} else {
+		token = c.GetHeader("X-API-Token")
 	}
 
-	// Check for X-API-Token header
-	token := c.GetHeader("X-API-Token")
-	if token != "" {
-		return v.apiTokens[token]
+	if token == "" {
+		return false
 	}
 
+	tokenBytes := []byte(token)
+	for storedToken := range v.apiTokens {
+		if subtle.ConstantTimeCompare([]byte(storedToken), tokenBytes) == 1 {
+			return true
+		}
+	}
 	return false
 }
 
@@ -157,3 +159,4 @@ func (v *Validator) GetClientCAs() *x509.CertPool {
 func (v *Validator) IsClientCALoaded() bool {
 	return v.clientCALoaded
 }
+

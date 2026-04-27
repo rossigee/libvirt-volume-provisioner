@@ -174,13 +174,6 @@ func (h *ExternalLogHook) sendLogs(logs []map[string]interface{}) {
 			"url":         h.config.URL,
 		}).Error("External log system returned error")
 	}
-
-	if resp.StatusCode >= 400 {
-		logrus.StandardLogger().WithFields(logrus.Fields{
-			"status_code": resp.StatusCode,
-			"url":         h.config.URL,
-		}).Error("External log system returned error")
-	}
 }
 
 // Close stops the background worker and flushes remaining logs
@@ -192,6 +185,7 @@ func (h *ExternalLogHook) Close() {
 type LokiHook struct {
 	config HookConfig
 	client *http.Client
+	labels map[string]string
 }
 
 // NewLokiHook creates a hook for sending logs to Loki
@@ -206,6 +200,7 @@ func NewLokiHook(lokiURL string, labels map[string]string) *LokiHook {
 	return &LokiHook{
 		config: config,
 		client: &http.Client{Timeout: config.Timeout},
+		labels: labels,
 	}
 }
 
@@ -214,11 +209,12 @@ func (h *LokiHook) Levels() []logrus.Level {
 }
 
 func (h *LokiHook) Fire(entry *logrus.Entry) error {
-	// Format for Loki push API
-	stream := map[string]string{
-		"level":  entry.Level.String(),
-		"source": "libvirt-provisioner",
+	// Format for Loki push API; merge caller-supplied labels then add level
+	stream := make(map[string]string, len(h.labels)+1)
+	for k, v := range h.labels {
+		stream[k] = v
 	}
+	stream["level"] = entry.Level.String()
 
 	values := [][]interface{}{
 		{

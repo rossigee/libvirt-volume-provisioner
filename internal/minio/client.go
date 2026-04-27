@@ -5,6 +5,7 @@ package minio
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -98,13 +99,21 @@ func NewClient() (*Client, error) {
 		Secure: u.Scheme == "https",
 	}
 
-	// Configure TLS to accept self-signed certificates if needed
 	if u.Scheme == "https" {
-		options.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // #nosec G402 -- Allow self-signed certificates for MinIO
-			},
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+		if caCertPath := os.Getenv("MINIO_CA_CERT"); caCertPath != "" {
+			//nolint:gosec // Path controlled by admin via environment variable
+			caCert, err := os.ReadFile(caCertPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read MINIO_CA_CERT %q: %w", caCertPath, err)
+			}
+			caPool := x509.NewCertPool()
+			if !caPool.AppendCertsFromPEM(caCert) {
+				return nil, fmt.Errorf("failed to parse MINIO_CA_CERT %q: no valid PEM blocks", caCertPath)
+			}
+			tlsConfig.RootCAs = caPool
 		}
+		options.Transport = &http.Transport{TLSClientConfig: tlsConfig}
 	}
 
 	minioClient, err := minio.New(u.Host, options)
@@ -162,23 +171,6 @@ func parseRetryConfig(attemptsStr, backoffStr string) retry.Config {
 		MaxAttempts: maxAttempts,
 		Delays:      delays,
 	}
-}
-
-// DownloadImage downloads an image from MinIO to a temporary file with exponential backoff retry
-func (c *Client) DownloadImage(ctx context.Context, imageURL string, updater ProgressUpdater) (string, error) {
-	var tempPath string
-
-	// Wrap download with retry logic
-	err := retry.WithRetry(ctx, c.retryConfig, func() error {
-		path, downloadErr := c.downloadImageOnce(ctx, imageURL, updater)
-		tempPath = path
-		return downloadErr
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to download image from %s after retries: %w", imageURL, err)
-	}
-
-	return tempPath, nil
 }
 
 // DownloadImageToPath downloads an image from MinIO to a specific file path with exponential backoff retry
@@ -332,98 +324,6 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 	return nil
 }
 
-// downloadImageOnce performs a single download attempt without retry logic
-func (c *Client) downloadImageOnce(ctx context.Context, imageURL string, updater ProgressUpdater) (string, error) {
-	// Parse the image URL to extract bucket and object
-	u, err := url.Parse(imageURL)
-	if err != nil {
-		return "", fmt.Errorf("invalid image URL: %w", err)
-	}
-
-	// Extract bucket and object from path
-	pathParts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
-	if len(pathParts) < 2 {
-		return "", fmt.Errorf("invalid image URL path: %s", u.Path)
-	}
-
-	bucketName := pathParts[0]
-	objectName := strings.Join(pathParts[1:], "/")
-
-	// Create temporary file
-	tempFile, err := os.CreateTemp("", "provision-image-*")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp file: %w", err)
-	}
-	defer func() {
-		_ = tempFile.Close() // Close errors are not critical
-	}()
-
-	tempPath := tempFile.Name()
-
-	// Get object info for size
-	objInfo, err := c.minioClient.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
-	if err != nil {
-		_ = os.Remove(tempPath) // Cleanup errors are not critical
-		return "", fmt.Errorf("failed to stat object: %w", err)
-	}
-
-	totalSize := objInfo.Size
-
-	// Download object with progress tracking
-	object, err := c.minioClient.GetObject(ctx, bucketName, objectName, minio.GetObjectOptions{})
-	if err != nil {
-		_ = os.Remove(tempPath) // Cleanup errors are not critical
-		return "", fmt.Errorf("failed to get object: %w", err)
-	}
-	defer func() {
-		_ = object.Close() // Close errors are not critical
-	}()
-
-	// Copy with progress tracking
-	buffer := make([]byte, 32*1024*1024) // 32MB buffer
-	var downloaded int64
-
-	for {
-		select {
-		case <-ctx.Done():
-			_ = os.Remove(tempPath) // Cleanup errors are not critical
-			return "", fmt.Errorf("context cancelled: %w", ctx.Err())
-		default:
-		}
-
-		n, err := object.Read(buffer)
-		if n > 0 {
-			if _, writeErr := tempFile.Write(buffer[:n]); writeErr != nil {
-				_ = os.Remove(tempPath) // Cleanup errors are not critical
-				return "", fmt.Errorf("failed to write to temp file: %w", writeErr)
-			}
-			downloaded += int64(n)
-
-			// Update progress
-			if updater != nil && totalSize > 0 {
-				percent := float64(downloaded) / float64(totalSize) * 100
-				updater.UpdateProgress("downloading", percent, downloaded, totalSize)
-			}
-		}
-
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			_ = os.Remove(tempPath) // Cleanup errors are not critical
-			return "", fmt.Errorf("failed to read from MinIO: %w", err)
-		}
-	}
-
-	// Verify download
-	if downloaded != totalSize {
-		_ = os.Remove(tempPath) // Cleanup errors are not critical
-		return "", fmt.Errorf("download incomplete: got %d bytes, expected %d", downloaded, totalSize)
-	}
-
-	return tempPath, nil
-}
-
 // Cleanup removes a temporary file
 func (c *Client) Cleanup(tempPath string) error {
 	if tempPath != "" {
@@ -444,15 +344,17 @@ func (c *Client) StatObject(ctx context.Context, bucketName, objectName string) 
 	return objInfo, nil
 }
 
-// GetObjectContent gets the content of a small object from MinIO
+// GetObjectContent gets the content of a small object from MinIO (max 64KB).
 func (c *Client) GetObjectContent(ctx context.Context, bucketName, objectName string) ([]byte, error) {
+	const maxObjectSize = 64 * 1024
+
 	object, err := c.minioClient.GetObject(ctx, bucketName, objectName, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get MinIO object: %w", err)
 	}
 	defer func() { _ = object.Close() }()
 
-	content, err := io.ReadAll(object)
+	content, err := io.ReadAll(io.LimitReader(object, maxObjectSize))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read MinIO object content: %w", err)
 	}
