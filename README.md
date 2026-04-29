@@ -16,7 +16,8 @@ The `libvirt-volume-provisioner` runs as a systemd service on hypervisor hosts a
 
 ✅ Compression-preserving image caching (50-70% space savings)
 ✅ Checksum-based cache invalidation
-✅ Mutual TLS authentication for production deployments
+✅ HTTPS server mode with mutual TLS when CLIENT_CA_CERT configured
+✅ HTTP development mode for testing without client certificates
 ✅ RESTful HTTP API with progress tracking
 ✅ Prometheus metrics and health checks
 ✅ Automatic rollback on provisioning failure
@@ -118,13 +119,16 @@ See [API Reference](./docs/api-reference.md) for complete documentation.
 
 Configure via environment variables:
 
-| Variable | Example |
-|----------|---------|
-| `MINIO_ENDPOINT` | `https://minio.example.com` |
-| `MINIO_ACCESS_KEY` | Your MinIO access key |
-| `MINIO_SECRET_KEY` | Your MinIO secret key |
-| `LVM_VOLUME_GROUP` | `data` |
-| `PORT` | `8080` |
+| Variable | Example | Description |
+|----------|---------|-------------|
+| `MINIO_ENDPOINT` | `https://minio.example.com` | MinIO server endpoint |
+| `MINIO_ACCESS_KEY` | Your MinIO access key | MinIO access key |
+| `MINIO_SECRET_KEY` | Your MinIO secret key | MinIO secret key |
+| `LVM_VOLUME_GROUP` | `data` | LVM volume group for VM storage |
+| `PORT` | `3443` | HTTP/HTTPS server port |
+| `SERVER_CERT` | `/etc/pki/provisioner/servercert.pem` | Server certificate for HTTPS |
+| `SERVER_KEY` | `/etc/pki/provisioner/serverkey.pem` | Server private key for HTTPS |
+| `CLIENT_CA_CERT` | `/etc/pki/provisioner/cacert.pem` | Client CA cert (enables HTTPS mode) |
 
 See [Configuration](./docs/configuration.md) for all options.
 
