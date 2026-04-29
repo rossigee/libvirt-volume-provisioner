@@ -75,9 +75,29 @@ Add environment variables:
 
 ```ini
 [Service]
-Environment="TLS_CERT_FILE=/etc/libvirt-volume-provisioner/server.crt"
-Environment="TLS_KEY_FILE=/etc/libvirt-volume-provisioner/server.key"
-Environment="CLIENT_CA_CERT=/etc/libvirt-volume-provisioner/client-ca.crt"
+Environment="SERVER_CERT=/etc/pki/provisioner/servercert.pem"
+Environment="SERVER_KEY=/etc/pki/provisioner/serverkey.pem"
+Environment="CLIENT_CA_CERT=/etc/pki/provisioner/cacert.pem"
+```
+
+### Enabling HTTPS Server Mode
+
+The provisioner runs in two modes:
+
+- **Development Mode (HTTP)**: When `CLIENT_CA_CERT` is not configured, serves plain HTTP on port 3443
+- **Production Mode (HTTPS)**: When `CLIENT_CA_CERT` is configured, serves HTTPS with mutual TLS authentication
+
+To enable HTTPS, set the `CLIENT_CA_CERT` environment variable to the path of your client CA certificate. The provisioner will automatically:
+- Load server certificates from `SERVER_CERT` and `SERVER_KEY` (or defaults)
+- Enable HTTPS with client certificate authentication
+- Log "production (HTTPS - client CA configured)" mode
+
+Example service configuration for HTTPS:
+```ini
+[Service]
+Environment="SERVER_CERT=/etc/pki/provisioner/servercert.pem"
+Environment="SERVER_KEY=/etc/pki/provisioner/serverkey.pem"
+Environment="CLIENT_CA_CERT=/etc/pki/provisioner/cacert.pem"
 ```
 
 #### On Client Host
