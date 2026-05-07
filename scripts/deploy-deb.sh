@@ -5,14 +5,14 @@ set -e
 # Usage: B2_KEY_ID=key B2_APPLICATION_KEY=key ./deploy-deb.sh
 
 # Check for required environment variables
-if [ -z "$B2_KEY_ID" ] || [ -z "$B2_APPLICATION_KEY" ]; then
-    echo "Error: B2_KEY_ID and B2_APPLICATION_KEY environment variables must be set"
-    echo "Usage: B2_KEY_ID=your-key B2_APPLICATION_KEY=your-secret ./deploy-deb.sh"
+if [ -z "$B2_KEY_ID" ] || [ -z "$B2_APPLICATION_KEY" ] || [ -z "$B2_BUCKET" ]; then
+    echo "Error: B2_KEY_ID, B2_APPLICATION_KEY, and B2_BUCKET environment variables must be set"
+    echo "Usage: B2_KEY_ID=your-key B2_APPLICATION_KEY=your-secret B2_BUCKET=your-bucket ./deploy-deb.sh"
     exit 1
 fi
 
 DEB_FILE="libvirt-volume-provisioner_0.1.0_amd64.deb"
-BUCKET="debs-golder-tech-static"
+BUCKET="$B2_BUCKET"
 
 echo "Configuring B2 access..."
 mcli alias set b2 https://s3.us-west-002.backblazeb2.com "$B2_KEY_ID" "$B2_APPLICATION_KEY"
