@@ -210,7 +210,7 @@ func TestPopulateVolume(t *testing.T) {
 // so the image data was never written to the block device.
 func TestQcow2ConvertArgs(t *testing.T) {
 	imagePath := "/var/lib/libvirt/images/some-image.qcow2"
-	devicePath := "/dev/data/gitea.golder.lan-root"
+	devicePath := "/dev/data/example-vm-root"
 
 	args := qcow2ConvertArgs(imagePath, devicePath)
 
