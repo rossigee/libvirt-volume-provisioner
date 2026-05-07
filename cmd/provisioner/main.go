@@ -264,8 +264,12 @@ func main() {
 	}
 
 	host := os.Getenv("HOST")
-	if host == "" {
-		host = "0.0.0.0"
+
+	var listenAddr string
+	if host == "" || host == "*" || host == "0.0.0.0" {
+		listenAddr = ":" + port
+	} else {
+		listenAddr = host + ":" + port
 	}
 
 	dbPath := os.Getenv("DB_PATH")
@@ -340,7 +344,7 @@ func main() {
 	if !authValidator.IsClientCALoaded() {
 		// Run HTTP server for development when no client CA is configured
 		srv = &http.Server{
-			Addr:              fmt.Sprintf("%s:%s", host, port),
+			Addr:              listenAddr,
 			Handler:           router,
 			ReadTimeout:       15 * time.Second,
 			ReadHeaderTimeout: 15 * time.Second,
@@ -365,7 +369,7 @@ func main() {
 
 		// Run HTTPS server when client CA is configured
 		srv = &http.Server{
-			Addr:              fmt.Sprintf("%s:%s", host, port),
+			Addr:              listenAddr,
 			Handler:           router,
 			ReadTimeout:       15 * time.Second,
 			ReadHeaderTimeout: 15 * time.Second,
