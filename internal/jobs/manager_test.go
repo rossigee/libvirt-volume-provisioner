@@ -560,7 +560,7 @@ func TestProvisionVolume_NoDependencies(t *testing.T) {
 // and never embeds the raw URL (which would produce invalid paths when used as a filename).
 func TestURLCacheKey(t *testing.T) {
 	urls := []string{
-		"https://backups.golder.lan:9000/vmnode-images/runner.qcow2",
+		"https://storage.example.com:9000/vmnode-images/runner.qcow2",
 		"http://minio:9000/bucket/image.qcow2",
 		"https://example.com/path/to/image.qcow2",
 	}
