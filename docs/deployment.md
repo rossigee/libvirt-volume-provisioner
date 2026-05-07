@@ -291,7 +291,7 @@ Configure GitHub Secrets:
 - `GPG_PRIVATE_KEY`: GPG private key (export with `gpg --export-secret-keys --armor <key-id>`)
 
 The repository requires:
-- B2 bucket: `debs-golder-tech-static`
+- B2 bucket: configured via `B2_BUCKET` environment variable
 - Structure: `dists/` and `pool/` directories
 - GPG signature verification enabled
 
