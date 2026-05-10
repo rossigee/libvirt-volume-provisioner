@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `minio.bucket` are now read from config (previously hardcoded).
 - `--config` flag added to override the default config path.
 
+### Fixed
+- **Debian postinst**: Config directory group set to `libvirt-volume-provisioner` so the service
+  user can read its own config on fresh installs; existing log file ownership corrected on upgrade.
+- **Tracing startup**: OTLP connection failure is now a warning rather than a fatal error, so the
+  daemon starts normally when the collector is temporarily unavailable.
+
 ### Removed
 - All configuration env vars except `MINIO_ACCESS_KEY` / `MINIO_ACCESS_KEY_ID` and
   `MINIO_SECRET_KEY` / `MINIO_SECRET_ACCESS_KEY`.
