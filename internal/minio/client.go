@@ -12,12 +12,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/config"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/retry"
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel"
@@ -37,79 +37,48 @@ type Client struct {
 	retryConfig retry.Config
 }
 
-// NewClient creates a new MinIO client.
-func NewClient() (*Client, error) {
-	endpoint := os.Getenv("MINIO_ENDPOINT")
-	if endpoint == "" {
-		endpoint = "https://minio.example.com"
+// NewClient creates a new MinIO client from the provided configuration.
+func NewClient(cfg config.MinIOConfig) (*Client, error) {
+	if cfg.AccessKey == "" {
+		return nil, fmt.Errorf("minio access_key is required (set via config or MINIO_ACCESS_KEY env var)")
+	}
+	if cfg.SecretKey == "" {
+		return nil, fmt.Errorf("minio secret_key is required (set via config or MINIO_SECRET_KEY env var)")
 	}
 
-	accessKey := os.Getenv("MINIO_ACCESS_KEY")
-	if accessKey == "" {
-		// Also check for AWS/MinIO standard variable name
-		accessKey = os.Getenv("MINIO_ACCESS_KEY_ID")
-	}
-
-	secretKey := os.Getenv("MINIO_SECRET_KEY")
-	if secretKey == "" {
-		// Also check for AWS/MinIO standard variable name
-		secretKey = os.Getenv("MINIO_SECRET_ACCESS_KEY")
-	}
-
-	// Debug logging for environment variables
 	logrus.WithFields(logrus.Fields{
-		"MINIO_ENDPOINT":              os.Getenv("MINIO_ENDPOINT"),
-		"MINIO_ACCESS_KEY_set":        os.Getenv("MINIO_ACCESS_KEY") != "",
-		"MINIO_ACCESS_KEY_ID_set":     os.Getenv("MINIO_ACCESS_KEY_ID") != "",
-		"MINIO_SECRET_KEY_set":        os.Getenv("MINIO_SECRET_KEY") != "",
-		"MINIO_SECRET_ACCESS_KEY_set": os.Getenv("MINIO_SECRET_ACCESS_KEY") != "",
-		"accessKey_found":             accessKey != "",
-		"secretKey_found":             secretKey != "",
-	}).Debug("MinIO environment variable check")
+		"endpoint":         cfg.Endpoint,
+		"access_key_set":   cfg.AccessKey != "",
+		"secret_key_set":   cfg.SecretKey != "",
+	}).Debug("Initialising MinIO client")
 
-	if accessKey == "" {
-		return nil, fmt.Errorf(
-			"MINIO_ACCESS_KEY or MINIO_ACCESS_KEY_ID environment variable is required " +
-				"(check /etc/default/libvirt-volume-provisioner)")
-	}
-
-	if secretKey == "" {
-		return nil, fmt.Errorf(
-			"MINIO_SECRET_KEY or MINIO_SECRET_ACCESS_KEY environment variable is required " +
-				"(check /etc/default/libvirt-volume-provisioner)")
-	}
-
-	// Parse endpoint URL
-	u, err := url.Parse(endpoint)
+	u, err := url.Parse(cfg.Endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("invalid MINIO_ENDPOINT '%s': %w (expected format: https://hostname:port)", endpoint, err)
+		return nil, fmt.Errorf("invalid minio endpoint %q: %w", cfg.Endpoint, err)
 	}
-
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("invalid MINIO_ENDPOINT scheme '%s': must be http or https", u.Scheme)
+		return nil, fmt.Errorf("invalid minio endpoint scheme %q: must be http or https", u.Scheme)
 	}
-
 	if u.Host == "" {
-		return nil, fmt.Errorf("invalid MINIO_ENDPOINT '%s': missing hostname", endpoint)
+		return nil, fmt.Errorf("invalid minio endpoint %q: missing hostname", cfg.Endpoint)
 	}
 
-	// Create MinIO client with TLS configuration
 	options := &minio.Options{
-		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
+		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Secure: u.Scheme == "https",
 	}
 
 	if u.Scheme == "https" {
 		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-		if caCertPath := os.Getenv("MINIO_CA_CERT"); caCertPath != "" {
-			//nolint:gosec // Path controlled by admin via environment variable
-			caCert, err := os.ReadFile(caCertPath)
+		if cfg.CACert != "" {
+			//nolint:gosec // path is admin-controlled via config file
+			caCert, err := os.ReadFile(cfg.CACert)
 			if err != nil {
-				return nil, fmt.Errorf("failed to read MINIO_CA_CERT %q: %w", caCertPath, err)
+				return nil, fmt.Errorf("failed to read minio ca_cert %q: %w", cfg.CACert, err)
 			}
 			caPool := x509.NewCertPool()
 			if !caPool.AppendCertsFromPEM(caCert) {
-				return nil, fmt.Errorf("failed to parse MINIO_CA_CERT %q: no valid PEM blocks", caCertPath)
+				return nil, fmt.Errorf("failed to parse minio ca_cert %q: no valid PEM blocks", cfg.CACert)
 			}
 			tlsConfig.RootCAs = caPool
 		}
@@ -121,7 +90,6 @@ func NewClient() (*Client, error) {
 		return nil, fmt.Errorf("failed to create MinIO client for %s: %w", u.Host, err)
 	}
 
-	// Test the connection by listing buckets
 	_, err = minioClient.ListBuckets(context.Background())
 	if err != nil {
 		logrus.WithError(err).Warn("Failed to list buckets - MinIO connection test failed")
@@ -129,46 +97,19 @@ func NewClient() (*Client, error) {
 		logrus.Info("MinIO connection test successful")
 	}
 
-	// Configure retry logic
-	retryConfig := parseRetryConfig(
-		os.Getenv("MINIO_RETRY_ATTEMPTS"),
-		os.Getenv("MINIO_RETRY_BACKOFF_MS"),
-	)
-
 	return &Client{
 		minioClient: minioClient,
-		retryConfig: retryConfig,
+		retryConfig: retryConfigFrom(cfg.RetryAttempts, cfg.RetryBackoffMS),
 	}, nil
 }
 
-// parseRetryConfig parses retry configuration from environment variables
-func parseRetryConfig(attemptsStr, backoffStr string) retry.Config {
-	// Default values
-	maxAttempts := 3
-	delays := []time.Duration{100 * time.Millisecond, 1 * time.Second, 10 * time.Second}
-
-	// Parse max attempts
-	if attemptsStr != "" {
-		if attempts, err := strconv.Atoi(attemptsStr); err == nil && attempts > 0 {
-			maxAttempts = attempts
-		}
+func retryConfigFrom(attempts int, backoffMS []int) retry.Config {
+	delays := make([]time.Duration, len(backoffMS))
+	for i, ms := range backoffMS {
+		delays[i] = time.Duration(ms) * time.Millisecond
 	}
-
-	// Parse backoff delays
-	if backoffStr != "" {
-		var parsedDelays []time.Duration
-		for _, delayStr := range strings.Split(backoffStr, ",") {
-			if ms, err := strconv.Atoi(strings.TrimSpace(delayStr)); err == nil && ms > 0 {
-				parsedDelays = append(parsedDelays, time.Duration(ms)*time.Millisecond)
-			}
-		}
-		if len(parsedDelays) > 0 {
-			delays = parsedDelays
-		}
-	}
-
 	return retry.Config{
-		MaxAttempts: maxAttempts,
+		MaxAttempts: attempts,
 		Delays:      delays,
 	}
 }

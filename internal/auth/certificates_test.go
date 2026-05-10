@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,36 +27,36 @@ func writeTokenFile(t *testing.T, tokens ...string) string {
 
 func TestNewValidator(t *testing.T) {
 	tokenFile := writeTokenFile(t, "test-token-abcdef")
-	t.Setenv("API_TOKENS_FILE", tokenFile)
 
 	t.Run("no client CA configured", func(t *testing.T) {
-		t.Setenv("CLIENT_CA_CERT", "")
-		validator, err := NewValidator()
+		cfg := config.ServerConfig{APITokensFile: tokenFile}
+		validator, err := NewValidator(cfg)
 		require.NoError(t, err)
 		require.NotNil(t, validator)
 		assert.False(t, validator.IsClientCALoaded())
 	})
 
 	t.Run("client CA points to non-existent file", func(t *testing.T) {
-		t.Setenv("CLIENT_CA_CERT", "/nonexistent/ca.pem")
-		_, err := NewValidator()
+		cfg := config.ServerConfig{
+			CACert:        "/nonexistent/ca.pem",
+			APITokensFile: tokenFile,
+		}
+		_, err := NewValidator(cfg)
 		assert.Error(t, err)
 	})
 }
 
 func TestLoadAPITokens(t *testing.T) {
 	t.Run("missing token file returns error", func(t *testing.T) {
-		t.Setenv("API_TOKENS_FILE", filepath.Join(t.TempDir(), "nonexistent-tokens"))
 		v := &Validator{apiTokens: make(map[string]bool)}
-		err := v.loadAPITokens()
+		err := v.loadAPITokens(filepath.Join(t.TempDir(), "nonexistent-tokens"))
 		assert.Error(t, err)
 	})
 
 	t.Run("valid token file loads tokens", func(t *testing.T) {
 		tokenFile := writeTokenFile(t, "token-one", "token-two", "# comment")
-		t.Setenv("API_TOKENS_FILE", tokenFile)
 		v := &Validator{apiTokens: make(map[string]bool)}
-		require.NoError(t, v.loadAPITokens())
+		require.NoError(t, v.loadAPITokens(tokenFile))
 		assert.True(t, v.apiTokens["token-one"])
 		assert.True(t, v.apiTokens["token-two"])
 		assert.False(t, v.apiTokens["# comment"])
@@ -65,9 +66,8 @@ func TestLoadAPITokens(t *testing.T) {
 		f, err := os.CreateTemp(t.TempDir(), "empty-tokens-*")
 		require.NoError(t, err)
 		require.NoError(t, f.Close())
-		t.Setenv("API_TOKENS_FILE", f.Name())
 		v := &Validator{apiTokens: make(map[string]bool)}
-		err = v.loadAPITokens()
+		err = v.loadAPITokens(f.Name())
 		assert.Error(t, err)
 	})
 }

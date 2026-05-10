@@ -1,250 +1,163 @@
 # Configuration
 
-The libvirt-volume-provisioner is configured via environment variables.
+The libvirt-volume-provisioner is configured via a YAML file.  The default path is
+`/etc/libvirt-volume-provisioner/config.yaml`; override it with the `--config` flag.
 
-## Environment Variables
+MinIO credentials (`access_key` / `secret_key`) may also be supplied via environment
+variables so that secrets stay out of the config file — see [Credentials](#credentials)
+below.
 
-### Server Configuration
+## Config file location
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `PORT` | HTTP server port | `8080` | No |
-| `HOST` | HTTP server host | `0.0.0.0` | No |
-| `TLS_CERT_FILE` | Path to TLS certificate | - | No |
-| `TLS_KEY_FILE` | Path to TLS private key | - | No |
-
-### MinIO Configuration
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `MINIO_ENDPOINT` | MinIO/S3 server URL | `https://minio.example.com` | Yes |
-| `MINIO_ACCESS_KEY` | MinIO access key ID | - | Yes |
-| `MINIO_SECRET_KEY` | MinIO secret key | - | Yes |
-| `MINIO_REGION` | MinIO/S3 region | `us-east-1` | No |
-| `MINIO_BUCKET` | MinIO bucket name | `vm-images` | No |
-| `MINIO_USE_SSL` | Use SSL for MinIO connection | `true` | No |
-| `MINIO_RETRY_ATTEMPTS` | Number of retry attempts | `3` | No |
-| `MINIO_RETRY_BACKOFF_MS` | Retry backoff delays (comma-separated) | `100,1000,10000` | No |
-
-### LVM Configuration
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `LVM_VOLUME_GROUP` | LVM volume group to use | `data` | No |
-| `LVM_RETRY_ATTEMPTS` | Number of LVM retry attempts | `2` | No |
-| `LVM_RETRY_BACKOFF_MS` | LVM retry backoff delays (comma-separated) | `100,1000` | No |
-
-### Cache Eviction Configuration
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `CACHE_MAX_AGE` | Maximum age of a cached image before eviction (Go duration format) | `168h` (7 days) | No |
-| `CACHE_EVICTION_INTERVAL` | How often to run the eviction sweep (Go duration format) | `1h` | No |
-
-Use any value accepted by Go's `time.ParseDuration`, e.g. `24h`, `72h`, `168h`.
-
-### Database Configuration
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `DB_PATH` | Path to job database file | `/var/lib/libvirt-volume-provisioner/jobs.db` | No |
-
-### Authentication Configuration
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `CLIENT_CA_CERT` | Path to client CA certificate | `/etc/ssl/certs/ca-certificates.crt` | No |
-| `API_TOKENS_FILE` | Path to API tokens file | `/etc/libvirt-volume-provisioner/tokens` | No |
-
-### Logging Configuration
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `LOG_LEVEL` | Log level (debug, info, warn, error) | `info` | No |
-| `LOG_FORMAT` | Log format (json, text) | `json` | No |
-
-### OpenTelemetry Configuration
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP gRPC exporter endpoint | - | No |
-| `OTEL_SERVICE_NAME` | Service name for traces | `libvirt-volume-provisioner` | No |
-| `OTEL_TRACES_EXPORTER` | Trace exporter (otlp) | `otlp` | No |
-
-## Configuration Examples
-
-### Basic Configuration
-
-```bash
-export MINIO_ENDPOINT="https://minio.example.com"
-export MINIO_ACCESS_KEY="minioadmin"
-export MINIO_SECRET_KEY="minioadmin"
-export LVM_VOLUME_GROUP="vg0"
-export PORT="8080"
+```
+--config /etc/libvirt-volume-provisioner/config.yaml   (default)
+--config /path/to/custom.yaml
 ```
 
-### Production Configuration with TLS
+The daemon starts with built-in defaults for every field, so a partial config file is
+fine — only specify what differs from the defaults.
 
-```bash
-export PORT="443"
-export HOST="0.0.0.0"
-export TLS_CERT_FILE="/etc/libvirt-volume-provisioner/server.crt"
-export TLS_KEY_FILE="/etc/libvirt-volume-provisioner/server.key"
-export CLIENT_CA_CERT="/etc/libvirt-volume-provisioner/client-ca.crt"
+## Full reference
 
-export MINIO_ENDPOINT="https://minio.prod.example.com"
-export MINIO_ACCESS_KEY="prod-access-key"
-export MINIO_SECRET_KEY="prod-secret-key"
-export MINIO_BUCKET="production-vm-images"
+```yaml
+# /etc/libvirt-volume-provisioner/config.yaml
 
-export LVM_VOLUME_GROUP="prod-vg"
-export LOG_LEVEL="info"
-export LOG_FORMAT="json"
+server:
+  port: 8080                                            # HTTP/HTTPS listen port
+  tls_cert: ""                                          # Path to server TLS certificate (enables HTTPS)
+  tls_key: ""                                          # Path to server TLS private key
+  ca_cert: ""                                          # Path to client CA cert (enables mTLS)
+  api_tokens_file: /etc/libvirt-volume-provisioner/tokens
+  db_path: ./provisioner.db                            # SQLite job database path
 
-# OpenTelemetry tracing (optional)
-export OTEL_EXPORTER_OTLP_ENDPOINT="https://otel-collector.example.com:4317"
-export OTEL_SERVICE_NAME="libvirt-volume-provisioner-prod"
+minio:
+  endpoint: https://minio.example.com                  # MinIO/S3 server URL (http or https)
+  bucket: ""                                           # Default bucket (informational)
+  access_key: ""                                       # See Credentials section
+  secret_key: ""                                       # See Credentials section
+  ca_cert: ""                                         # Custom CA cert for MinIO HTTPS
+  retry_attempts: 3
+  retry_backoff_ms: [100, 1000, 10000]                 # Delay between retries (ms)
+
+libvirt:
+  uri: qemu:///system                                  # libvirt connection URI
+  pool: images                                         # Storage pool name
+  max_concurrent: 2                                    # Max simultaneous provisioning jobs
+
+lvm:
+  volume_group: vg0                                    # LVM volume group for VM disks
+  retry_attempts: 2
+  retry_backoff_ms: [100, 1000]
+
+cache:
+  max_age: 168h                                        # Evict cached images older than this
+  eviction_interval: 1h                                # How often to run the eviction sweep
+
+logging:
+  level: info                                          # debug | info | warn | error
+  format: json                                         # json | text
+  file: stdout                                         # stdout | stderr | /path/to/file.log
+  sampling_rate: 0                                     # 0 = disabled; N = log every Nth entry
+  loki_url: ""                                         # Loki push endpoint (optional)
+  webhook_url: ""                                      # Webhook for log delivery (optional)
+
+metrics:
+  enabled: true                                        # Expose Prometheus metrics at /metrics
+
+tracing:
+  endpoint: ""                                         # OTLP gRPC endpoint; empty = disabled
+  sampling_rate: 1.0                                   # 0.0–1.0 (1.0 = 100%)
+  exporters: [otlp]                                    # Supported: otlp
 ```
 
-### Development Configuration
+## Credentials
 
-```bash
-export MINIO_ENDPOINT="http://localhost:9000"
-export MINIO_ACCESS_KEY="minioadmin"
-export MINIO_SECRET_KEY="minioadmin"
-export MINIO_USE_SSL="false"
-export LVM_VOLUME_GROUP="vg0"
-export LOG_LEVEL="debug"
-export LOG_FORMAT="text"
+`minio.access_key` and `minio.secret_key` can be set in the config file, but it is
+recommended to supply them via environment variables so that credentials are not stored
+in a world-readable file:
+
+| Environment variable | Overrides |
+|---|---|
+| `MINIO_ACCESS_KEY` or `MINIO_ACCESS_KEY_ID` | `minio.access_key` |
+| `MINIO_SECRET_KEY` or `MINIO_SECRET_ACCESS_KEY` | `minio.secret_key` |
+
+Environment variables take precedence over config file values when both are present.
+
+## Typical production config
+
+```yaml
+server:
+  port: 3443
+  tls_cert: /etc/pki/provisioner/servercert.pem
+  tls_key:  /etc/pki/provisioner/serverkey.pem
+  ca_cert:  /etc/pki/libvirt/ca.crt
+  api_tokens_file: /etc/libvirt-volume-provisioner/tokens
+  db_path: /var/lib/libvirt-volume-provisioner/jobs.db
+
+minio:
+  endpoint: https://minio.prod.example.com:9000
+  bucket: vm-images
+  ca_cert: /etc/pki/minio/ca.crt
+  retry_attempts: 5
+  retry_backoff_ms: [100, 1000, 10000, 30000, 60000]
+
+libvirt:
+  uri: qemu+tls://localhost/system
+  pool: data
+  max_concurrent: 4
+
+lvm:
+  volume_group: data
+
+cache:
+  max_age: 336h    # 2 weeks
+  eviction_interval: 6h
+
+logging:
+  level: info
+  format: json
+  file: /var/log/libvirt-volume-provisioner/provisioner.log
+
+tracing:
+  endpoint: otel-collector.internal:4317
+  sampling_rate: 0.1
 ```
 
-## Systemd Service Configuration
+## Systemd deployment
 
-Create or edit `/etc/default/libvirt-volume-provisioner`:
+Create `/etc/libvirt-volume-provisioner/config.yaml` with your settings, then supply
+credentials via systemd drop-in:
 
-```bash
-# Basic MinIO configuration
-MINIO_ENDPOINT=https://minio.example.com
-MINIO_ACCESS_KEY=your-access-key
-MINIO_SECRET_KEY=your-secret-key
-
-# LVM settings
-LVM_VOLUME_GROUP=data
-
-# Server settings
-PORT=8080
-HOST=0.0.0.0
-
-# Logging
-LOG_LEVEL=info
-LOG_FORMAT=json
+```ini
+# /etc/systemd/system/libvirt-volume-provisioner.service.d/credentials.conf
+[Service]
+Environment="MINIO_ACCESS_KEY=your-access-key"
+Environment="MINIO_SECRET_KEY=your-secret-key"
 ```
 
-Then reload the service:
+Reload and restart:
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl restart libvirt-volume-provisioner
 ```
 
-## Docker Configuration
+## Docker deployment
 
-Use environment variables with Docker:
+Mount the config file and pass credentials as environment variables:
 
 ```bash
 docker run -d \
-  --name libvirt-volume-provisioner \
-  -e MINIO_ENDPOINT=https://minio.example.com \
-  -e MINIO_ACCESS_KEY=minioadmin \
-  -e MINIO_SECRET_KEY=minioadmin \
-  -e LVM_VOLUME_GROUP=vg0 \
-  -e PORT=8080 \
-  -e LOG_LEVEL=info \
+  --privileged \
+  -v /var/run/libvirt:/var/run/libvirt:rw \
+  -v /dev/mapper:/dev/mapper:rw \
+  -v /etc/libvirt-volume-provisioner:/etc/libvirt-volume-provisioner:ro \
+  -e MINIO_ACCESS_KEY=your-access-key \
+  -e MINIO_SECRET_KEY=your-secret-key \
+  -p 3443:3443 \
   ghcr.io/rossigee/libvirt-volume-provisioner:latest
 ```
 
-Or use an environment file:
+## Certificate setup
 
-```bash
-# .env file
-MINIO_ENDPOINT=https://minio.example.com
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-LVM_VOLUME_GROUP=vg0
-
-docker run -d --env-file .env \
-  --name libvirt-volume-provisioner \
-  ghcr.io/rossigee/libvirt-volume-provisioner:latest
-```
-
-## Certificate Setup
-
-See [Authentication](./authentication.md) for detailed certificate setup instructions.
-
-## MinIO Retry Configuration
-
-Configure retry behavior for MinIO connections:
-
-```bash
-# Number of retry attempts (default: 3)
-export MINIO_RETRY_ATTEMPTS=5
-
-# Retry backoff delays in milliseconds (comma-separated)
-# Example: 100ms, 1s, 10s
-export MINIO_RETRY_BACKOFF_MS=100,1000,10000
-```
-
-## LVM Retry Configuration
-
-Configure retry behavior for LVM operations:
-
-```bash
-# Number of LVM retry attempts (default: 2)
-export LVM_RETRY_ATTEMPTS=3
-
-# Retry backoff delays in milliseconds
-export LVM_RETRY_BACKOFF_MS=100,1000
-```
-
-## Logging Configuration
-
-Control logging behavior:
-
-```bash
-# Log level: debug, info, warn, error
-export LOG_LEVEL=debug
-
-# Log format: json (structured), text (human-readable)
-export LOG_FORMAT=json
-```
-
-Example output with JSON logging:
-
-```json
-{
-  "timestamp": "2026-01-27T10:30:45.123Z",
-  "level": "info",
-  "component": "provisioner",
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "message": "Starting image download",
-  "image_url": "https://minio.example.com/images/ubuntu-20.04.qcow2"
-}
-```
-
-## Verification
-
-Verify configuration by checking the health endpoint:
-
-```bash
-curl https://hypervisor.example.com:8080/health \
-  --cacert /path/to/ca.crt \
-  --cert /path/to/client.crt \
-  --key /path/to/client.key
-```
-
-Check service logs:
-
-```bash
-sudo journalctl -u libvirt-volume-provisioner -f
-```
-
+See [Authentication](./authentication.md) for TLS certificate and API token setup.

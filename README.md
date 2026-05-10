@@ -40,10 +40,10 @@ docker run -d \
   --privileged \
   -v /var/run/libvirt:/var/run/libvirt:rw \
   -v /dev/mapper:/dev/mapper:rw \
-  -p 8080:8080 \
-  -e MINIO_ENDPOINT=https://minio.example.com \
+  -v /etc/libvirt-volume-provisioner:/etc/libvirt-volume-provisioner:ro \
   -e MINIO_ACCESS_KEY=your-access-key \
   -e MINIO_SECRET_KEY=your-secret-key \
+  -p 3443:3443 \
   ghcr.io/rossigee/libvirt-volume-provisioner:latest
 ```
 
@@ -67,7 +67,7 @@ See [Installation](./docs/installation.md) for detailed instructions.
 | [OpenAPI Spec](./api.yaml) | Machine-readable OpenAPI 3.0.3 specification |
 | [Usage Examples](./docs/usage-examples.md) | Practical curl examples and integration patterns |
 | [Installation](./docs/installation.md) | Installation methods and deployment options |
-| [Configuration](./docs/configuration.md) | Environment variables and service setup |
+| [Configuration](./docs/configuration.md) | YAML config file reference and credential setup |
 | [Authentication](./docs/authentication.md) | TLS certificates and API token setup |
 | [Monitoring](./docs/monitoring.md) | Prometheus metrics, alerting, and logging |
 | [Integration](./docs/integration.md) | Integration with infrastructure-builder, Ansible, Terraform |
@@ -117,20 +117,41 @@ See [API Reference](./docs/api-reference.md) for complete documentation.
 
 ## Configuration
 
-Configure via environment variables:
+The daemon reads `/etc/libvirt-volume-provisioner/config.yaml` at startup (override with `--config`):
 
-| Variable | Example | Description |
-|----------|---------|-------------|
-| `MINIO_ENDPOINT` | `https://minio.example.com` | MinIO server endpoint |
-| `MINIO_ACCESS_KEY` | Your MinIO access key | MinIO access key |
-| `MINIO_SECRET_KEY` | Your MinIO secret key | MinIO secret key |
-| `LVM_VOLUME_GROUP` | `data` | LVM volume group for VM storage |
-| `PORT` | `3443` | HTTP/HTTPS server port |
-| `SERVER_CERT` | `/etc/pki/provisioner/servercert.pem` | Server certificate for HTTPS |
-| `SERVER_KEY` | `/etc/pki/provisioner/serverkey.pem` | Server private key for HTTPS |
-| `CLIENT_CA_CERT` | `/etc/pki/provisioner/cacert.pem` | Client CA cert (enables HTTPS mode) |
+```yaml
+server:
+  port: 3443
+  tls_cert: /etc/pki/provisioner/servercert.pem
+  tls_key:  /etc/pki/provisioner/serverkey.pem
+  ca_cert:  /etc/pki/libvirt/ca.crt
 
-See [Configuration](./docs/configuration.md) for all options.
+minio:
+  endpoint: https://minio.example.com:9000
+  bucket: vm-images
+
+libvirt:
+  uri: qemu+tls://localhost/system
+  pool: data
+  max_concurrent: 2
+
+lvm:
+  volume_group: data
+
+logging:
+  level: info
+  format: json
+  file: /var/log/libvirt-volume-provisioner/provisioner.log
+```
+
+MinIO credentials are supplied via environment variables so they stay out of the config file:
+
+```bash
+export MINIO_ACCESS_KEY=your-access-key
+export MINIO_SECRET_KEY=your-secret-key
+```
+
+See [Configuration](./docs/configuration.md) for all options including tracing, metrics, caching, and retry settings.
 
 ## Monitoring
 

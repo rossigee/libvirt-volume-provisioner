@@ -128,12 +128,10 @@ type Manager struct {
 	bgCancel    context.CancelFunc
 }
 
-// maxConcurrentJobs is the semaphore capacity; must match api.maxConcurrentJobs.
-const maxConcurrentJobs = 2
-
 // NewManager creates a new job manager.
 func NewManager(minioClient *minio.Client, lvmManager *lvm.Manager,
-	libvirtPool LibvirtPool, store *storage.Store, met *appmetrics.Metrics) *Manager {
+	libvirtPool LibvirtPool, store *storage.Store, met *appmetrics.Metrics,
+	maxConcurrent int, cacheMaxAge, cacheEvictionInterval time.Duration) *Manager {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	mgr := &Manager{
 		minioClient: minioClient,
@@ -142,7 +140,7 @@ func NewManager(minioClient *minio.Client, lvmManager *lvm.Manager,
 		store:       store,
 		metrics:     met,
 		jobs:        make(map[string]*Job),
-		semaphore:   make(chan struct{}, maxConcurrentJobs),
+		semaphore:   make(chan struct{}, maxConcurrent),
 		bgCancel:    bgCancel,
 	}
 	if met != nil {
@@ -152,26 +150,10 @@ func NewManager(minioClient *minio.Client, lvmManager *lvm.Manager,
 		met.UpdateDependencyStatus("storage", store != nil)
 	}
 	if libvirtPool != nil {
-		maxAge := parseDurationEnv("CACHE_MAX_AGE", 168*time.Hour)
-		interval := parseDurationEnv("CACHE_EVICTION_INTERVAL", time.Hour)
-		go mgr.runEvictionLoop(bgCtx, maxAge, interval)
+		go mgr.runEvictionLoop(bgCtx, cacheMaxAge, cacheEvictionInterval)
 	}
 	go mgr.runCleanupLoop(bgCtx)
 	return mgr
-}
-
-func parseDurationEnv(name string, defaultVal time.Duration) time.Duration {
-	raw := os.Getenv(name)
-	if raw == "" {
-		return defaultVal
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil {
-		logrus.WithFields(logrus.Fields{"env_var": name, "value": raw}).
-			Warn("Invalid duration in env var, using default")
-		return defaultVal
-	}
-	return d
 }
 
 func (m *Manager) runEvictionLoop(ctx context.Context, maxAge, interval time.Duration) {

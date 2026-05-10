@@ -17,9 +17,6 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 )
 
-// maxConcurrentJobs must match the semaphore size in jobs.Manager.
-const maxConcurrentJobs = 2
-
 // maxRequestBodyBytes caps the size of incoming JSON request bodies.
 const maxRequestBodyBytes = 1 * 1024 * 1024 // 1 MB
 
@@ -37,19 +34,21 @@ type JobManager interface {
 
 // Handler handles HTTP API requests
 type Handler struct {
-	jobManager JobManager
-	metrics    *metrics.Metrics
-	version    string
-	startTime  time.Time
+	jobManager    JobManager
+	metrics       *metrics.Metrics
+	version       string
+	startTime     time.Time
+	maxConcurrent int
 }
 
 // NewHandler creates a new API handler
-func NewHandler(jobManager JobManager, metrics *metrics.Metrics, version string) *Handler {
+func NewHandler(jobManager JobManager, metrics *metrics.Metrics, version string, maxConcurrent int) *Handler {
 	return &Handler{
-		jobManager: jobManager,
-		metrics:    metrics,
-		version:    version,
-		startTime:  time.Now(),
+		jobManager:    jobManager,
+		metrics:       metrics,
+		version:       version,
+		startTime:     time.Now(),
+		maxConcurrent: maxConcurrent,
 	}
 }
 
@@ -328,7 +327,7 @@ func (h *Handler) DeleteCachedImage(c *gin.Context) {
 // HealthCheck provides service health information
 func (h *Handler) HealthCheck(c *gin.Context) {
 	activeJobsCount := h.jobManager.GetActiveJobs()
-	healthy := activeJobsCount < maxConcurrentJobs
+	healthy := activeJobsCount < h.maxConcurrent
 
 	if h.metrics != nil {
 		h.metrics.ActiveJobs.Set(float64(activeJobsCount))

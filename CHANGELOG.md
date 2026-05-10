@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-05-10
+
+### Changed
+- **Configuration**: Daemon now reads `/etc/libvirt-volume-provisioner/config.yaml` instead of
+  environment variables. All settings (server port, TLS, MinIO endpoint/CA, libvirt URI/pool,
+  LVM volume group, logging, metrics, tracing, cache) are now in the config file.
+  MinIO credentials (`MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY`) remain env-var-only so secrets
+  stay out of the config file.
+- **New config fields wired**: `libvirt.uri`, `libvirt.pool`, `libvirt.max_concurrent`, and
+  `minio.bucket` are now read from config (previously hardcoded).
+- `--config` flag added to override the default config path.
+
+### Removed
+- All configuration env vars except `MINIO_ACCESS_KEY` / `MINIO_ACCESS_KEY_ID` and
+  `MINIO_SECRET_KEY` / `MINIO_SECRET_ACCESS_KEY`.
+
 ## [0.10.0] - 2026-04-28
 
 ### Security

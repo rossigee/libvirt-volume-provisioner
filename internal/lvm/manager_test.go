@@ -8,12 +8,21 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/rossigee/libvirt-volume-provisioner/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+func testLVMCfg(vg string) config.LVMConfig {
+	return config.LVMConfig{
+		VolumeGroup:    vg,
+		RetryAttempts:  2,
+		RetryBackoffMS: []int{100, 1000},
+	}
+}
+
 func TestNewManager(t *testing.T) {
-	manager, err := NewManager("data")
+	manager, err := NewManager(testLVMCfg("data"))
 
 	if err != nil {
 		// Skip test if LVM tools are not available in test environment
@@ -27,28 +36,14 @@ func TestNewManager(t *testing.T) {
 
 func TestNewManager_InvalidVGName(t *testing.T) {
 	// Test with path separator should be rejected
-	_, err := NewManager("data/volume")
+	_, err := NewManager(testLVMCfg("data/volume"))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "must not contain path separators")
 
 	// Test with backslash should be rejected
-	_, err = NewManager("data\\volume")
+	_, err = NewManager(testLVMCfg("data\\volume"))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "must not contain path separators")
-}
-
-func TestNewManager_DefaultVG(t *testing.T) {
-	// Test with empty string should default to "data"
-	manager, err := NewManager("")
-
-	if err != nil {
-		// Skip test if LVM tools are not available in test environment
-		t.Skip("LVM tools not available in test environment:", err)
-	}
-
-	assert.NoError(t, err)
-	assert.NotNil(t, manager)
-	assert.Equal(t, "data", manager.vgName)
 }
 
 func TestVolumeInfo(t *testing.T) {

@@ -65,7 +65,7 @@ func (m *MockJobManager) DeleteCachedImage(_ string) error { return nil }
 
 func TestNewHandler(t *testing.T) {
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, nil, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version", 2)
 
 	assert.NotNil(t, handler)
 	assert.Equal(t, mockManager, handler.jobManager)
@@ -74,7 +74,7 @@ func TestNewHandler(t *testing.T) {
 
 func TestSetupRoutes(t *testing.T) {
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, nil, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version", 2)
 
 	// Create test router
 	router := gin.New()
@@ -116,7 +116,7 @@ func setupHealthRouter(handler *Handler) *gin.Engine {
 
 func TestHealthCheck(t *testing.T) {
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, nil, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version", 2)
 	router := setupHealthRouter(handler)
 
 	w := httptest.NewRecorder()
@@ -130,7 +130,7 @@ func TestHealthCheck(t *testing.T) {
 
 func TestHealthCheck_ReportsRealUptime(t *testing.T) {
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, nil, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version", 2)
 	router := setupHealthRouter(handler)
 
 	w := httptest.NewRecorder()
@@ -146,7 +146,7 @@ func TestHealthCheck_ReportsRealUptime(t *testing.T) {
 func TestHealthCheck_SetsHealthStatusMetric(t *testing.T) {
 	mockManager := &MockJobManager{} // GetActiveJobs returns 0 → healthy
 	m := appmetrics.NewMetrics()
-	handler := NewHandler(mockManager, m, "test-version")
+	handler := NewHandler(mockManager, m, "test-version", 2)
 	router := setupHealthRouter(handler)
 
 	w := httptest.NewRecorder()
@@ -158,9 +158,9 @@ func TestHealthCheck_SetsHealthStatusMetric(t *testing.T) {
 }
 
 func TestHealthCheck_DegradedSetsMetric(t *testing.T) {
-	mockManager := &MockJobManager{activeJobs: maxConcurrentJobs}
+	mockManager := &MockJobManager{activeJobs: 2}
 	m := appmetrics.NewMetrics()
-	handler := NewHandler(mockManager, m, "test-version")
+	handler := NewHandler(mockManager, m, "test-version", 2)
 	router := setupHealthRouter(handler)
 
 	w := httptest.NewRecorder()
@@ -175,7 +175,7 @@ func TestHealthCheck_DegradedSetsMetric(t *testing.T) {
 
 func TestProvisionVolume_InvalidJSON(t *testing.T) {
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, nil, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version", 2)
 
 	// Create test router
 	router := gin.New()
@@ -200,7 +200,7 @@ func TestProvisionVolume_InvalidJSON(t *testing.T) {
 
 func TestProvisionVolume_MissingFields(t *testing.T) {
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, nil, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version", 2)
 
 	// Create test router
 	router := gin.New()
@@ -226,7 +226,7 @@ func TestProvisionVolume_MissingFields(t *testing.T) {
 
 func TestProvisionVolume_ValidRequest(t *testing.T) {
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, nil, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version", 2)
 
 	// Create test router
 	router := gin.New()
@@ -261,7 +261,7 @@ func TestProvisionVolume_ValidRequest(t *testing.T) {
 
 func TestListCachedImages(t *testing.T) {
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, nil, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version", 2)
 
 	router := gin.New()
 	authMiddleware := func(c *gin.Context) { c.Next() }
@@ -279,7 +279,7 @@ func TestListCachedImages(t *testing.T) {
 
 func TestDeleteCachedImage_InvalidKey(t *testing.T) {
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, nil, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version", 2)
 
 	router := gin.New()
 	authMiddleware := func(c *gin.Context) { c.Next() }
@@ -297,7 +297,7 @@ func TestDeleteCachedImage_InvalidKey(t *testing.T) {
 
 func TestDeleteCachedImage_ManagerError(t *testing.T) {
 	errMock := &errorDeleteMockJobManager{}
-	handler := NewHandler(errMock, nil, "test-version")
+	handler := NewHandler(errMock, nil, "test-version", 2)
 
 	router := gin.New()
 	authMiddleware := func(c *gin.Context) { c.Next() }
@@ -315,7 +315,7 @@ func TestDeleteCachedImage_ManagerError(t *testing.T) {
 
 func TestDeleteCachedImage_ValidKey(t *testing.T) {
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, nil, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version", 2)
 
 	router := gin.New()
 	authMiddleware := func(c *gin.Context) { c.Next() }
@@ -344,7 +344,7 @@ func (m *errorDeleteMockJobManager) DeleteCachedImage(_ string) error {
 
 func TestFetchImageToCache_ValidRequest(t *testing.T) {
 	mockManager := &MockJobManager{}
-	handler := NewHandler(mockManager, nil, "test-version")
+	handler := NewHandler(mockManager, nil, "test-version", 2)
 
 	// Create test router
 	router := gin.New()

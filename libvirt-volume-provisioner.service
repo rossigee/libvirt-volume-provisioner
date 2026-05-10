@@ -8,8 +8,9 @@ Wants=network-online.target
 Type=simple
 User=libvirt-volume-provisioner
 Group=libvirt-volume-provisioner
+# Credentials only — all other settings live in /etc/libvirt-volume-provisioner/config.yaml
 EnvironmentFile=-/etc/default/libvirt-volume-provisioner
-ExecStart=/usr/bin/libvirt-volume-provisioner
+ExecStart=/usr/bin/libvirt-volume-provisioner --config /etc/libvirt-volume-provisioner/config.yaml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5
@@ -21,7 +22,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/libvirt-volume-provisioner,/var/lib/libvirt/images,/tmp,/run/lock/lvm
+ReadWritePaths=/var/lib/libvirt-volume-provisioner,/var/lib/libvirt/images,/var/log/libvirt-volume-provisioner,/tmp,/run/lock/lvm
 RestrictSUIDSGID=true
 PrivateDevices=no
 

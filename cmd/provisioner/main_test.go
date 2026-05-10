@@ -2,52 +2,27 @@ package main
 
 import (
 	"context"
-	"os"
 	"testing"
 
+	"github.com/rossigee/libvirt-volume-provisioner/internal/config"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestInitTracing_NoEndpoint(t *testing.T) {
-	originalEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	defer func() {
-		if originalEndpoint != "" {
-			_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint)
-		} else {
-			_ = os.Unsetenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-		}
-	}()
-
-	_ = os.Unsetenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-
-	tp, err := initTracing(context.Background())
+	// Tracing is disabled when endpoint is empty
+	tp, err := initTracing(context.Background(), config.TracingConfig{})
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, errOTLPNotConfigured)
 	assert.Nil(t, tp)
 }
 
 func TestInitTracing_InvalidConfig(t *testing.T) {
-	originalEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	originalExporters := os.Getenv("TRACING_EXPORTERS")
-	defer func() {
-		if originalEndpoint != "" {
-			_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint)
-		} else {
-			_ = os.Unsetenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-		}
-		if originalExporters != "" {
-			_ = os.Setenv("TRACING_EXPORTERS", originalExporters)
-		} else {
-			_ = os.Unsetenv("TRACING_EXPORTERS")
-		}
-	}()
-
-	_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
-	_ = os.Setenv("TRACING_EXPORTERS", "invalid-exporter")
-
-	tp, err := initTracing(context.Background())
 	// Should fail with no valid exporters
+	tp, err := initTracing(context.Background(), config.TracingConfig{
+		Endpoint:  "http://localhost:4317",
+		Exporters: []string{"invalid-exporter"},
+	})
 	assert.Error(t, err)
 	assert.Nil(t, tp)
 }

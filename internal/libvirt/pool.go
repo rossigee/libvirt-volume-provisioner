@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/libvirt/libvirt-go"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/config"
 	"github.com/sirupsen/logrus"
 )
 
@@ -30,18 +31,17 @@ type PoolManager struct {
 	poolPath string
 }
 
-// NewPoolManager creates a new libvirt pool manager
-func NewPoolManager(poolName string) (*PoolManager, error) {
-	// Connect to libvirt
-	conn, err := libvirt.NewConnect("qemu:///system")
+// NewPoolManager creates a new libvirt pool manager from the provided configuration.
+func NewPoolManager(cfg config.LibvirtConfig) (*PoolManager, error) {
+	conn, err := libvirt.NewConnect(cfg.URI)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to libvirt: %w", err)
+		return nil, fmt.Errorf("failed to connect to libvirt at %s: %w", cfg.URI, err)
 	}
 
 	pm := &PoolManager{
 		conn:     conn,
-		poolName: poolName,
-		poolPath: fmt.Sprintf("/var/lib/libvirt/%s", poolName),
+		poolName: cfg.Pool,
+		poolPath: fmt.Sprintf("/var/lib/libvirt/%s", cfg.Pool),
 	}
 
 	// Ensure the pool exists and is active
