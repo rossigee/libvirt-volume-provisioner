@@ -14,6 +14,7 @@ import (
 
 	qcow2reader "github.com/lima-vm/go-qcow2reader"
 	"github.com/lima-vm/go-qcow2reader/image/qcow2"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/config"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/retry"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
 	"github.com/sirupsen/logrus"
@@ -35,26 +36,17 @@ type Manager struct {
 	retryConfig retry.Config
 }
 
-// NewManager creates a new LVM manager with configurable volume group
-func NewManager(vgName string) (*Manager, error) {
-	// Validate volume group name (prevent path traversal)
-	if vgName == "" {
-		vgName = os.Getenv("LVM_VOLUME_GROUP")
-		if vgName == "" {
-			vgName = "vg0" // Generic default
-		}
-	}
-	if strings.ContainsAny(vgName, "/\\") {
-		return nil, fmt.Errorf("invalid volume group name '%s': must not contain path separators", vgName)
+// NewManager creates a new LVM manager from the provided configuration.
+func NewManager(cfg config.LVMConfig) (*Manager, error) {
+	if strings.ContainsAny(cfg.VolumeGroup, "/\\") {
+		return nil, fmt.Errorf("invalid volume group name %q: must not contain path separators", cfg.VolumeGroup)
 	}
 
-	// Verify the volume group exists
-	cmd := exec.CommandContext(context.Background(), "vgs", vgName)
+	cmd := exec.CommandContext(context.Background(), "vgs", cfg.VolumeGroup)
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("volume group '%s' does not exist or is not accessible: %w", vgName, err)
+		return nil, fmt.Errorf("volume group %q does not exist or is not accessible: %w", cfg.VolumeGroup, err)
 	}
 
-	// Verify LVM commands are available
 	if _, err := exec.LookPath("lvcreate"); err != nil {
 		return nil, fmt.Errorf("lvcreate command not found: %w", err)
 	}
@@ -62,48 +54,18 @@ func NewManager(vgName string) (*Manager, error) {
 		return nil, fmt.Errorf("qemu-img command not found: %w", err)
 	}
 
-	// Configure retry logic
-	retryConfig := parseLvmRetryConfig(
-		os.Getenv("LVM_RETRY_ATTEMPTS"),
-		os.Getenv("LVM_RETRY_BACKOFF_MS"),
-	)
+	delays := make([]time.Duration, len(cfg.RetryBackoffMS))
+	for i, ms := range cfg.RetryBackoffMS {
+		delays[i] = time.Duration(ms) * time.Millisecond
+	}
 
 	return &Manager{
-		vgName:      vgName,
-		retryConfig: retryConfig,
+		vgName: cfg.VolumeGroup,
+		retryConfig: retry.Config{
+			MaxAttempts: cfg.RetryAttempts,
+			Delays:      delays,
+		},
 	}, nil
-}
-
-// parseLvmRetryConfig parses retry configuration from environment variables
-func parseLvmRetryConfig(attemptsStr, backoffStr string) retry.Config {
-	// Default values for LVM (more conservative than MinIO)
-	maxAttempts := 2
-	delays := []time.Duration{100 * time.Millisecond, 1 * time.Second}
-
-	// Parse max attempts
-	if attemptsStr != "" {
-		if attempts, err := strconv.Atoi(attemptsStr); err == nil && attempts > 0 {
-			maxAttempts = attempts
-		}
-	}
-
-	// Parse backoff delays
-	if backoffStr != "" {
-		var parsedDelays []time.Duration
-		for _, delayStr := range strings.Split(backoffStr, ",") {
-			if ms, err := strconv.Atoi(strings.TrimSpace(delayStr)); err == nil && ms > 0 {
-				parsedDelays = append(parsedDelays, time.Duration(ms)*time.Millisecond)
-			}
-		}
-		if len(parsedDelays) > 0 {
-			delays = parsedDelays
-		}
-	}
-
-	return retry.Config{
-		MaxAttempts: maxAttempts,
-		Delays:      delays,
-	}
 }
 
 // CreateVolume creates a new LVM volume with exponential backoff retry

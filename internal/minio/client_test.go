@@ -2,9 +2,9 @@ package minio
 
 import (
 	"context"
-	"os"
 	"testing"
 
+	"github.com/rossigee/libvirt-volume-provisioner/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -12,101 +12,62 @@ import (
 func TestNewClient(t *testing.T) {
 	tests := []struct {
 		name        string
-		envVars     map[string]string
+		cfg         config.MinIOConfig
 		expectError bool
 		errorMsg    string
 	}{
 		{
 			name: "valid configuration",
-			envVars: map[string]string{
-				"MINIO_ENDPOINT":   "https://minio.example.com:9000",
-				"MINIO_ACCESS_KEY": "test-access-key",
-				"MINIO_SECRET_KEY": "test-secret-key",
+			cfg: config.MinIOConfig{
+				Endpoint:  "https://minio.example.com:9000",
+				AccessKey: "test-access-key",
+				SecretKey: "test-secret-key",
 			},
 			expectError: false,
 		},
 		{
 			name: "missing access key",
-			envVars: map[string]string{
-				"MINIO_ENDPOINT":          "https://minio.example.com:9000",
-				"MINIO_SECRET_ACCESS_KEY": "test-secret-key",
+			cfg: config.MinIOConfig{
+				Endpoint:  "https://minio.example.com:9000",
+				SecretKey: "test-secret-key",
 			},
 			expectError: true,
-			errorMsg:    "MINIO_ACCESS_KEY or MINIO_ACCESS_KEY_ID environment variable is required",
+			errorMsg:    "access_key is required",
 		},
 		{
 			name: "missing secret key",
-			envVars: map[string]string{
-				"MINIO_ENDPOINT":      "https://minio.example.com:9000",
-				"MINIO_ACCESS_KEY_ID": "test-access-key",
+			cfg: config.MinIOConfig{
+				Endpoint:  "https://minio.example.com:9000",
+				AccessKey: "test-access-key",
 			},
 			expectError: true,
-			errorMsg:    "MINIO_SECRET_KEY or MINIO_SECRET_ACCESS_KEY environment variable is required",
+			errorMsg:    "secret_key is required",
 		},
 		{
 			name: "invalid endpoint URL",
-			envVars: map[string]string{
-				"MINIO_ENDPOINT":   "not-a-url",
-				"MINIO_ACCESS_KEY": "test-access-key",
-				"MINIO_SECRET_KEY": "test-secret-key",
+			cfg: config.MinIOConfig{
+				Endpoint:  "not-a-url",
+				AccessKey: "test-access-key",
+				SecretKey: "test-secret-key",
 			},
 			expectError: true,
-			errorMsg:    "invalid MINIO_ENDPOINT",
+			errorMsg:    "invalid minio endpoint scheme",
 		},
 		{
 			name: "endpoint without scheme",
-			envVars: map[string]string{
-				"MINIO_ENDPOINT":   "minio.example.com:9000",
-				"MINIO_ACCESS_KEY": "test-access-key",
-				"MINIO_SECRET_KEY": "test-secret-key",
+			cfg: config.MinIOConfig{
+				Endpoint:  "minio.example.com:9000",
+				AccessKey: "test-access-key",
+				SecretKey: "test-secret-key",
 			},
 			expectError: true,
-			errorMsg:    "invalid MINIO_ENDPOINT scheme",
-		},
-		{
-			name: "default endpoint when not set",
-			envVars: map[string]string{
-				"MINIO_ACCESS_KEY": "test-access-key",
-				"MINIO_SECRET_KEY": "test-secret-key",
-			},
-			expectError: false,
-		},
-		{
-			name: "valid configuration with _ID suffix",
-			envVars: map[string]string{
-				"MINIO_ENDPOINT":          "https://minio.example.com:9000",
-				"MINIO_ACCESS_KEY_ID":     "test-access-key-id",
-				"MINIO_SECRET_ACCESS_KEY": "test-secret-access-key",
-			},
-			expectError: false,
-		},
-		{
-			name: "mixed variable names (old and new)",
-			envVars: map[string]string{
-				"MINIO_ENDPOINT":          "https://minio.example.com:9000",
-				"MINIO_ACCESS_KEY":        "test-access-key",
-				"MINIO_SECRET_ACCESS_KEY": "test-secret-access-key",
-			},
-			expectError: false,
+			errorMsg:    "invalid minio endpoint scheme",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Clear environment
-			_ = os.Unsetenv("MINIO_ENDPOINT")
-			_ = os.Unsetenv("MINIO_ACCESS_KEY")
-			_ = os.Unsetenv("MINIO_ACCESS_KEY_ID")
-			_ = os.Unsetenv("MINIO_SECRET_KEY")
-			_ = os.Unsetenv("MINIO_SECRET_ACCESS_KEY")
-
-			// Set test environment variables
-			for key, value := range tt.envVars {
-				_ = os.Setenv(key, value)
-			}
-
-			// Test client creation
-			client, err := NewClient()
+			client, err := NewClient(tt.cfg)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -122,20 +83,22 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
-func TestValidateImageURL(t *testing.T) {
-	// Setup test client with mock environment
-	_ = os.Setenv("MINIO_ENDPOINT", "https://minio.example.com:9000")
-	_ = os.Setenv("MINIO_ACCESS_KEY", "test-access-key")
-	_ = os.Setenv("MINIO_SECRET_KEY", "test-secret-key")
-	defer func() {
-		_ = os.Unsetenv("MINIO_ENDPOINT")
-		_ = os.Unsetenv("MINIO_ACCESS_KEY")
-		_ = os.Unsetenv("MINIO_SECRET_KEY")
-	}()
-
-	client, err := NewClient()
+func testClient(t *testing.T) *Client {
+	t.Helper()
+	client, err := NewClient(config.MinIOConfig{
+		Endpoint:      "https://minio.example.com:9000",
+		AccessKey:     "test-access-key",
+		SecretKey:     "test-secret-key",
+		RetryAttempts: 3,
+		RetryBackoffMS: []int{100, 1000, 10000},
+	})
 	require.NoError(t, err)
 	require.NotNil(t, client)
+	return client
+}
+
+func TestValidateImageURL(t *testing.T) {
+	client := testClient(t)
 
 	tests := []struct {
 		name        string
@@ -202,24 +165,11 @@ func (m *MockProgressUpdater) UpdateProgress(stage string, percent float64, byte
 
 // TestDownloadImageToPath tests the DownloadImageToPath method
 func TestDownloadImageToPath(t *testing.T) {
-	// Setup test client
-	_ = os.Setenv("MINIO_ENDPOINT", "https://minio.example.com:9000")
-	_ = os.Setenv("MINIO_ACCESS_KEY", "test-access-key")
-	_ = os.Setenv("MINIO_SECRET_KEY", "test-secret-key")
-	defer func() {
-		_ = os.Unsetenv("MINIO_ENDPOINT")
-		_ = os.Unsetenv("MINIO_ACCESS_KEY")
-		_ = os.Unsetenv("MINIO_SECRET_KEY")
-	}()
-
-	client, err := NewClient()
-	require.NoError(t, err)
-	require.NotNil(t, client)
-
+	client := testClient(t)
 	updater := &MockProgressUpdater{}
 
 	// Test with invalid URL - should fail during URL parsing
-	err = client.DownloadImageToPath(context.Background(), "not-a-valid-url", "/tmp/test.img", updater)
+	err := client.DownloadImageToPath(context.Background(), "not-a-valid-url", "/tmp/test.img", updater)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid image URL")
 

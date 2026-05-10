@@ -780,26 +780,6 @@ func TestListCachedImages_NoLibvirt(t *testing.T) {
 	assert.Nil(t, images)
 }
 
-// TestParseDurationEnv tests the parseDurationEnv helper
-func TestParseDurationEnv(t *testing.T) {
-	t.Run("returns default when env var not set", func(t *testing.T) {
-		t.Setenv("TEST_DURATION_UNSET", "")
-		d := parseDurationEnv("TEST_DURATION_UNSET", 5*time.Hour)
-		assert.Equal(t, 5*time.Hour, d)
-	})
-
-	t.Run("returns parsed value when env var is valid", func(t *testing.T) {
-		t.Setenv("TEST_DURATION_VALID", "24h")
-		d := parseDurationEnv("TEST_DURATION_VALID", 5*time.Hour)
-		assert.Equal(t, 24*time.Hour, d)
-	})
-
-	t.Run("returns default when env var is invalid", func(t *testing.T) {
-		t.Setenv("TEST_DURATION_INVALID", "notaduration")
-		d := parseDurationEnv("TEST_DURATION_INVALID", 5*time.Hour)
-		assert.Equal(t, 5*time.Hour, d)
-	})
-}
 
 // TestStop tests that Stop does not panic and signals the eviction goroutine
 func TestStop(t *testing.T) {
@@ -938,8 +918,7 @@ func TestNewManager_StartsEvictionLoop(t *testing.T) {
 		},
 	}
 
-	t.Setenv("CACHE_EVICTION_INTERVAL", "50ms")
-	m := NewManager(nil, nil, pool, nil, nil)
+	m := NewManager(nil, nil, pool, nil, nil, 2, time.Hour, 50*time.Millisecond)
 	defer m.Stop()
 
 	select {
@@ -952,7 +931,7 @@ func TestNewManager_StartsEvictionLoop(t *testing.T) {
 
 // TestNewManager_NilPool tests that NewManager does not start the eviction goroutine when pool is nil.
 func TestNewManager_NilPool(t *testing.T) {
-	m := NewManager(nil, nil, nil, nil, nil)
+	m := NewManager(nil, nil, nil, nil, nil, 2, 168*time.Hour, time.Hour)
 	defer m.Stop()
 	assert.NotNil(t, m)
 	assert.NotNil(t, m.bgCancel)
@@ -964,7 +943,7 @@ func TestNewManager_SetsInitialDependencyMetrics(t *testing.T) {
 	met := appmetrics.NewMetrics()
 	pool := &mockLibvirtPool{}
 
-	m := NewManager(nil, nil, pool, nil, met)
+	m := NewManager(nil, nil, pool, nil, met, 2, 168*time.Hour, time.Hour)
 	defer m.Stop()
 
 	// minio and storage are nil → 0; libvirt pool is non-nil → 1; lvm is nil → 0

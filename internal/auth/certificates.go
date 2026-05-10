@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/config"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 )
 
@@ -20,41 +21,38 @@ type Validator struct {
 	apiTokens      map[string]bool
 }
 
-// NewValidator creates a new authentication validator
-func NewValidator() (*Validator, error) {
+// NewValidator creates a new authentication validator from the provided configuration.
+func NewValidator(cfg config.ServerConfig) (*Validator, error) {
 	validator := &Validator{
 		clientCAs: x509.NewCertPool(),
 		apiTokens: make(map[string]bool),
 	}
 
-	if err := validator.loadClientCAs(); err != nil {
+	if err := validator.loadClientCAs(cfg.CACert); err != nil {
 		return nil, fmt.Errorf("failed to load client CAs: %w", err)
 	}
 
-	if err := validator.loadAPITokens(); err != nil {
+	if err := validator.loadAPITokens(cfg.APITokensFile); err != nil {
 		return nil, fmt.Errorf("failed to load API tokens: %w", err)
 	}
 
 	return validator, nil
 }
 
-// loadClientCAs loads client certificate authorities
-func (v *Validator) loadClientCAs() error {
-	caCertPath := os.Getenv("CLIENT_CA_CERT")
+func (v *Validator) loadClientCAs(caCertPath string) error {
 	if caCertPath == "" {
-		// No client CA configured; mTLS client cert auth is disabled
 		v.clientCALoaded = false
 		return nil
 	}
 
 	if _, err := os.Stat(caCertPath); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("CLIENT_CA_CERT file not found: %s", caCertPath)
+			return fmt.Errorf("server.ca_cert file not found: %s", caCertPath)
 		}
-		return fmt.Errorf("failed to stat CLIENT_CA_CERT %s: %w", caCertPath, err)
+		return fmt.Errorf("failed to stat server.ca_cert %s: %w", caCertPath, err)
 	}
 
-	//nolint:gosec // Path is controlled by admin via environment variable
+	//nolint:gosec // path is admin-controlled via config file
 	caCert, err := os.ReadFile(caCertPath)
 	if err != nil {
 		return fmt.Errorf("failed to read CA cert: %w", err)
@@ -68,22 +66,15 @@ func (v *Validator) loadClientCAs() error {
 	return nil
 }
 
-// loadAPITokens loads API tokens for authentication
-func (v *Validator) loadAPITokens() error {
-	tokenFile := os.Getenv("API_TOKENS_FILE")
-	if tokenFile == "" {
-		//nolint:gosec // Default configuration file path, not credentials
-		tokenFile = "/etc/libvirt-volume-provisioner/tokens"
-	}
-
+func (v *Validator) loadAPITokens(tokenFile string) error {
 	if _, err := os.Stat(tokenFile); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("API token file not found: %s (set API_TOKENS_FILE env var)", tokenFile)
+			return fmt.Errorf("API token file not found: %s", tokenFile)
 		}
 		return fmt.Errorf("failed to stat API token file %s: %w", tokenFile, err)
 	}
 
-	//nolint:gosec // Path is controlled by admin via environment variable
+	//nolint:gosec // path is admin-controlled via config file
 	content, err := os.ReadFile(tokenFile)
 	if err != nil {
 		return fmt.Errorf("failed to read API tokens: %w", err)

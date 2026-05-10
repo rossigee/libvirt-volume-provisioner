@@ -19,7 +19,7 @@ BINARY_UNIX=$(BINARY_NAME)_unix
 
 # Debian package parameters
 DEB_NAME=libvirt-volume-provisioner
-DEB_VERSION ?= 0.10.0
+DEB_VERSION ?= 0.11.0
 DEB_ARCH=amd64
 DEB_BUILD_DIR=deb-build
 
@@ -116,43 +116,71 @@ deb: build-linux ## Build Debian .deb package
 	@echo "#!/bin/bash" > $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "set -e" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "# Create user if it doesn't exist" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "# Create service user if it doesn't exist" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "if ! id -u libvirt-volume-provisioner > /dev/null 2>&1; then" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "    useradd --system --shell /bin/false libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "fi" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "# Create database directory" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "# Create runtime directories" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "mkdir -p /var/lib/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "chown libvirt-volume-provisioner:libvirt-volume-provisioner /var/lib/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "chmod 700 /var/lib/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "mkdir -p /var/log/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "chown libvirt-volume-provisioner:libvirt-volume-provisioner /var/log/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "chmod 750 /var/log/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "mkdir -p /etc/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "chown root:libvirt-volume-provisioner /etc/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "chmod 750 /etc/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "# Fix log file ownership if it exists but is owned by root" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "if [ -f /var/log/libvirt-volume-provisioner/provisioner.log ]; then" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "    chown libvirt-volume-provisioner:libvirt-volume-provisioner /var/log/libvirt-volume-provisioner/provisioner.log" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "fi" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "# Create environment file if it doesn't exist" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "# Create skeleton config.yaml if not present" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "if [ ! -f /etc/libvirt-volume-provisioner/config.yaml ]; then" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "    cat > /etc/libvirt-volume-provisioner/config.yaml << 'EOF'" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "# libvirt-volume-provisioner configuration" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "# See /usr/share/doc/libvirt-volume-provisioner/configuration.md for all options." >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "server:" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "  port: 8080" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "  api_tokens_file: /etc/libvirt-volume-provisioner/tokens" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "  db_path: /var/lib/libvirt-volume-provisioner/jobs.db" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "minio:" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "  endpoint: https://minio.example.com" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "  bucket: vm-images" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "libvirt:" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "  uri: qemu:///system" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "  pool: images" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "  max_concurrent: 2" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "lvm:" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "  volume_group: vg0" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "logging:" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "  level: info" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "  format: json" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "  file: /var/log/libvirt-volume-provisioner/provisioner.log" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "EOF" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "    chmod 640 /etc/libvirt-volume-provisioner/config.yaml" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "    chown root:libvirt-volume-provisioner /etc/libvirt-volume-provisioner/config.yaml" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "fi" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "# Create credentials env file if not present (holds MINIO_ACCESS_KEY / MINIO_SECRET_KEY only)" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "if [ ! -f /etc/default/libvirt-volume-provisioner ]; then" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "    cat > /etc/default/libvirt-volume-provisioner << EOF" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "PORT=8080" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "HOST=0.0.0.0" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "MINIO_ENDPOINT=https://minio.example.com" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "    cat > /etc/default/libvirt-volume-provisioner << 'EOF'" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "# MinIO credentials - keep secrets out of config.yaml" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "MINIO_ACCESS_KEY=your-access-key" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "MINIO_SECRET_KEY=your-secret-key" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "MINIO_RETRY_ATTEMPTS=3" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "MINIO_RETRY_BACKOFF_MS=100,1000,10000" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "# LVM configuration" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "LVM_VOLUME_GROUP=data" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "LVM_RETRY_ATTEMPTS=2" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "LVM_RETRY_BACKOFF_MS=100,1000" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "# Database configuration" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "DB_PATH=/var/lib/libvirt-volume-provisioner/jobs.db" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "EOF" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "    chmod 600 /etc/default/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "    chown root:root /etc/default/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "fi" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "# Set permissions" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "chown libvirt-volume-provisioner:libvirt-volume-provisioner /usr/bin/$(BINARY_NAME)" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "# Set binary permissions" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "chown root:libvirt-volume-provisioner /usr/bin/$(BINARY_NAME)" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "chmod 755 /usr/bin/$(BINARY_NAME)" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "	# No sudoers for v0.9" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "# Reload systemd and enable service" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "systemctl daemon-reload" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
