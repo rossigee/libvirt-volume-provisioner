@@ -309,14 +309,15 @@ func TestDeleteImageNonExistent(t *testing.T) {
 }
 
 func TestCalculateChecksum(t *testing.T) {
-	// CalculateChecksum validates that file path is under /var/lib/libvirt/
-	// For testing, we create a test file under that path structure
-	// This test verifies the function works with valid paths
+	tmpDir := t.TempDir()
+	imagePath := filepath.Join(tmpDir, "test_image")
+	require.NoError(t, os.WriteFile(imagePath, []byte("test image content"), 0o600))
 
-	// Note: CalculateChecksum has path validation that prevents testing with arbitrary temp directories
-	// The function correctly rejects paths outside /var/lib/libvirt/ for security
-	// This test is skipped as it would require running with elevated privileges
-	t.Skip("CalculateChecksum requires files under /var/lib/libvirt/, skipping in unit tests")
+	checksum, err := CalculateChecksum(imagePath)
+
+	assert.NoError(t, err)
+	assert.Len(t, checksum, 64)
+	assert.Regexp(t, `^[0-9a-f]+$`, checksum)
 }
 
 func TestCalculateChecksumPathTraversal(t *testing.T) {
@@ -328,7 +329,7 @@ func TestCalculateChecksumPathTraversal(t *testing.T) {
 }
 
 func TestCalculateChecksumNonExistent(t *testing.T) {
-	checksum, err := CalculateChecksum("/var/lib/libvirt/nonexistent_file")
+	checksum, err := CalculateChecksum(filepath.Join(t.TempDir(), "nonexistent_file"))
 	assert.Error(t, err)
 	assert.Empty(t, checksum)
 }

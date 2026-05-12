@@ -174,13 +174,14 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 
 	totalSize := objInfo.Size
 
-	// Validate destination path
-	if strings.Contains(destPath, "..") || !strings.HasPrefix(destPath, "/var/lib/libvirt/") {
+	// Destination path is always provided by AllocateImageFile (poolPath + hex cache key);
+	// reject traversal as a belt-and-suspenders guard.
+	if strings.Contains(destPath, "..") {
 		return fmt.Errorf("invalid destination path: %s", destPath)
 	}
 
 	// Create or truncate destination file
-	destFile, err := os.Create(destPath) // #nosec G304 -- Path validated above
+	destFile, err := os.Create(destPath) // #nosec G304 -- path comes from AllocateImageFile
 	if err != nil {
 		return fmt.Errorf("failed to create destination file: %w", err)
 	}
