@@ -148,7 +148,6 @@ deb: build-linux ## Build Debian .deb package
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "minio:" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "  endpoint: https://minio.example.com" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "  bucket: vm-images" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "libvirt:" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "  uri: qemu:///system" >> $(DEB_BUILD_DIR)/DEBIAN/postinst

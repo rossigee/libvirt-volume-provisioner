@@ -82,11 +82,20 @@ jobs:
         docker push ghcr.io/${{ github.repository }}:latest
         docker push ghcr.io/${{ github.repository }}:v${VERSION}
 
+    - name: Extract release notes from CHANGELOG
+      id: changelog
+      run: |
+        VERSION=${{ steps.version.outputs.version }}
+        # Extract the block between ## [VERSION] and the next ## [
+        NOTES=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+        # Write to a file to preserve newlines
+        echo "$NOTES" > release_notes.md
+
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
       with:
         files: |
           libvirt-volume-provisioner_*.deb
-        generate_release_notes: true
+        body_path: release_notes.md
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
