@@ -119,7 +119,7 @@ func (h *logCorrelationHook) Levels() []logrus.Level {
 	return logrus.AllLevels
 }
 
-func (h *logCorrelationHook) Fire(entry *logrus.Entry) {
+func (h *logCorrelationHook) Fire(entry *logrus.Entry) error {
 	span := trace.SpanFromContext(entry.Context)
 	if span != nil && span.IsRecording() {
 		spanContext := span.SpanContext()
@@ -128,6 +128,7 @@ func (h *logCorrelationHook) Fire(entry *logrus.Entry) {
 			entry.Data["span_id"] = spanContext.SpanID().String()
 		}
 	}
+	return nil
 }
 
 func main() {
@@ -195,6 +196,7 @@ func main() {
 				logrus.WithError(err).Error("Failed to shutdown tracer provider")
 			}
 		}()
+		logrus.AddHook(&logCorrelationHook{})
 		logrus.Info("OTLP tracing initialized")
 	}
 

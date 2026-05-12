@@ -529,7 +529,7 @@ func TestRecoverJobs(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Check that the job was marked as failed in the database
-	record, err := store.GetJob(runningJob.ID)
+	record, err := store.GetJob(context.Background(), runningJob.ID)
 	assert.NoError(t, err)
 	assert.Equal(t, "failed", record.Status)
 	assert.Contains(t, record.ErrorMessage, "daemon restarted")

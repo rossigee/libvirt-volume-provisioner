@@ -266,17 +266,6 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 	return nil
 }
 
-// Cleanup removes a temporary file
-func (c *Client) Cleanup(tempPath string) error {
-	if tempPath != "" {
-		err := os.Remove(tempPath)
-		if err != nil {
-			return fmt.Errorf("failed to cleanup temp file: %w", err)
-		}
-	}
-	return nil
-}
-
 // StatObject gets object information from MinIO
 func (c *Client) StatObject(ctx context.Context, bucketName, objectName string) (minio.ObjectInfo, error) {
 	objInfo, err := c.minioClient.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
@@ -304,26 +293,3 @@ func (c *Client) GetObjectContent(ctx context.Context, bucketName, objectName st
 	return content, nil
 }
 
-// ValidateImageURL validates that an image URL is accessible
-func (c *Client) ValidateImageURL(ctx context.Context, imageURL string) error {
-	u, err := url.Parse(imageURL)
-	if err != nil {
-		return fmt.Errorf("invalid image URL: %w", err)
-	}
-
-	pathParts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
-	if len(pathParts) < 2 {
-		return fmt.Errorf("invalid image URL path: %s", u.Path)
-	}
-
-	bucketName := pathParts[0]
-	objectName := strings.Join(pathParts[1:], "/")
-
-	// Check if object exists
-	_, err = c.minioClient.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
-	if err != nil {
-		return fmt.Errorf("image not accessible: %w", err)
-	}
-
-	return nil
-}

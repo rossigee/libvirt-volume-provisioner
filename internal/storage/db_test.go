@@ -60,7 +60,7 @@ func TestSaveJob_Insert(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify job was saved
-	retrieved, err := store.GetJob("test-job-1")
+	retrieved, err := store.GetJob(context.Background(), "test-job-1")
 	require.NoError(t, err)
 	assert.Equal(t, job.ID, retrieved.ID)
 	assert.Equal(t, job.Status, retrieved.Status)
@@ -92,7 +92,7 @@ func TestSaveJob_Update(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify update
-	retrieved, err := store.GetJob("test-job-2")
+	retrieved, err := store.GetJob(context.Background(), "test-job-2")
 	require.NoError(t, err)
 	assert.Equal(t, string(types.StatusRunning), retrieved.Status)
 }
@@ -104,7 +104,7 @@ func TestGetJob_NotFound(t *testing.T) {
 		_ = store.Close() // Ignore error in test
 	}()
 
-	_, err = store.GetJob("nonexistent")
+	_, err = store.GetJob(context.Background(), "nonexistent")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "job not found")
 }
@@ -130,22 +130,22 @@ func TestListJobs(t *testing.T) {
 	}
 
 	// List all jobs
-	jobs, err := store.ListJobs(ListJobsFilter{})
+	jobs, err := store.ListJobs(context.Background(), ListJobsFilter{})
 	require.NoError(t, err)
 	assert.Equal(t, 5, len(jobs))
 
 	// List with limit
-	jobs, err = store.ListJobs(ListJobsFilter{Limit: 2})
+	jobs, err = store.ListJobs(context.Background(), ListJobsFilter{Limit: 2})
 	require.NoError(t, err)
 	assert.Equal(t, 2, len(jobs))
 
 	// List with status filter
-	jobs, err = store.ListJobs(ListJobsFilter{Status: string(types.StatusCompleted)})
+	jobs, err = store.ListJobs(context.Background(), ListJobsFilter{Status: string(types.StatusCompleted)})
 	require.NoError(t, err)
 	assert.Equal(t, 5, len(jobs))
 
 	// List with non-existent status
-	jobs, err = store.ListJobs(ListJobsFilter{Status: string(types.StatusPending)})
+	jobs, err = store.ListJobs(context.Background(), ListJobsFilter{Status: string(types.StatusPending)})
 	require.NoError(t, err)
 	assert.Equal(t, 0, len(jobs))
 }
@@ -190,22 +190,22 @@ func TestMarkInProgressJobsFailed(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mark in-progress jobs as failed
-	err = store.MarkInProgressJobsFailed()
+	err = store.MarkInProgressJobsFailed(context.Background())
 	require.NoError(t, err)
 
 	// Verify running job is now failed
-	retrieved, err := store.GetJob("running-1")
+	retrieved, err := store.GetJob(context.Background(), "running-1")
 	require.NoError(t, err)
 	assert.Equal(t, string(types.StatusFailed), retrieved.Status)
 	assert.Contains(t, retrieved.ErrorMessage, "daemon restarted")
 
 	// Verify pending job is now failed
-	retrieved, err = store.GetJob("pending-1")
+	retrieved, err = store.GetJob(context.Background(), "pending-1")
 	require.NoError(t, err)
 	assert.Equal(t, string(types.StatusFailed), retrieved.Status)
 
 	// Verify completed job is unchanged
-	retrieved, err = store.GetJob("completed-1")
+	retrieved, err = store.GetJob(context.Background(), "completed-1")
 	require.NoError(t, err)
 	assert.Equal(t, string(types.StatusCompleted), retrieved.Status)
 }
@@ -243,17 +243,17 @@ func TestGetJobCount(t *testing.T) {
 	}
 
 	// Count running jobs
-	count, err := store.GetJobCount(string(types.StatusRunning))
+	count, err := store.GetJobCount(context.Background(), string(types.StatusRunning))
 	require.NoError(t, err)
 	assert.Equal(t, 3, count)
 
 	// Count completed jobs
-	count, err = store.GetJobCount(string(types.StatusCompleted))
+	count, err = store.GetJobCount(context.Background(), string(types.StatusCompleted))
 	require.NoError(t, err)
 	assert.Equal(t, 2, count)
 
 	// Count non-existent status
-	count, err = store.GetJobCount(string(types.StatusPending))
+	count, err = store.GetJobCount(context.Background(), string(types.StatusPending))
 	require.NoError(t, err)
 	assert.Equal(t, 0, count)
 }
@@ -301,20 +301,20 @@ func TestDeleteOldJobs(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete jobs older than 24 hours
-	err = store.DeleteOldJobs(24 * time.Hour)
+	err = store.DeleteOldJobs(context.Background(), 24*time.Hour)
 	require.NoError(t, err)
 
 	// Verify old completed job is deleted
-	_, err = store.GetJob("old-job")
+	_, err = store.GetJob(context.Background(), "old-job")
 	assert.Error(t, err)
 
 	// Verify recent completed job still exists
-	job, err := store.GetJob("recent-job")
+	job, err := store.GetJob(context.Background(), "recent-job")
 	require.NoError(t, err)
 	assert.Equal(t, "recent-job", job.ID)
 
 	// Verify running job still exists (not deleted even if old)
-	job, err = store.GetJob("running-job")
+	job, err = store.GetJob(context.Background(), "running-job")
 	require.NoError(t, err)
 	assert.Equal(t, "running-job", job.ID)
 }
@@ -339,7 +339,7 @@ func TestSaveJob_WithCompletedAt(t *testing.T) {
 	err = store.SaveJob(context.Background(), job)
 	require.NoError(t, err)
 
-	retrieved, err := store.GetJob("completed-job")
+	retrieved, err := store.GetJob(context.Background(), "completed-job")
 	require.NoError(t, err)
 	assert.NotNil(t, retrieved.CompletedAt)
 	assert.Equal(t, completedTime.Unix(), retrieved.CompletedAt.Unix())
