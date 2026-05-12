@@ -50,12 +50,12 @@ func TestVolumeInfo(t *testing.T) {
 	// Test VolumeInfo struct creation
 	info := &VolumeInfo{
 		Name:       "test-volume",
-		SizeBytes:  1073741824, // 1GB
+		SizeBytes:  1000000000, // 1GB
 		Attributes: "-wi-a-----",
 	}
 
 	assert.Equal(t, "test-volume", info.Name)
-	assert.Equal(t, int64(1073741824), info.SizeBytes)
+	assert.Equal(t, int64(1000000000), info.SizeBytes)
 	assert.Equal(t, "-wi-a-----", info.Attributes)
 }
 
