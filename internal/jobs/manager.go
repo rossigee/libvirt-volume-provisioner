@@ -483,7 +483,7 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	estimator := timing.NewEstimator(downloadRate, convertRate)
 
 	var downloadSize, convertSize int64
-	convertSize = int64(req.VolumeSizeGB) * 1024 * 1024 * 1024
+	convertSize = int64(req.VolumeSizeGB) * 1000 * 1000 * 1000
 	if req.ImageType == "qcow2" {
 		downloadSize = convertSize / 5
 	} else {

@@ -111,7 +111,7 @@ func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB in
 func (m *Manager) createVolumeOnce(ctx context.Context, volumeName string, sizeGB int) error {
 	// Create LVM volume
 	cmd := exec.CommandContext(ctx, "lvcreate",
-		"-L", fmt.Sprintf("%dG", sizeGB),
+		"-L", fmt.Sprintf("%dg", sizeGB),
 		"-n", volumeName, m.vgName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -463,7 +463,7 @@ func (m *Manager) validateExistingVolume(ctx context.Context, volumeName string,
 	}
 
 	// Check size (allow some tolerance for filesystem overhead)
-	requiredSizeBytes := int64(requiredSizeGB) * 1024 * 1024 * 1024
+	requiredSizeBytes := int64(requiredSizeGB) * 1000 * 1000 * 1000
 	actualSizeBytes := info.SizeBytes
 
 	// Allow 5% variance for filesystem/formatting differences
