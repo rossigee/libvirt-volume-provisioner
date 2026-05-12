@@ -33,11 +33,12 @@ func WithRetry(ctx context.Context, cfg Config, fn func() error) error {
 			delay := cfg.Delays[delayIndex]
 
 			// Wait for delay or context cancellation
+			timer := time.NewTimer(delay)
 			select {
-			case <-time.After(delay):
+			case <-timer.C:
 				// Delay complete, continue to next attempt
 			case <-ctx.Done():
-				// Context cancelled
+				timer.Stop()
 				return fmt.Errorf("retry cancelled: %w", ctx.Err())
 			}
 		}

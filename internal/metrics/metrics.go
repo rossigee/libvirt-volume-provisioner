@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"sync/atomic"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -22,8 +24,8 @@ type Metrics struct {
 	CacheHits     prometheus.Counter
 	CacheMisses   prometheus.Counter
 	CacheHitRatio prometheus.Gauge
-	cacheHits     int64 // internal counter for ratio calculation
-	cacheMisses   int64 // internal counter for ratio calculation
+	cacheHits     atomic.Int64
+	cacheMisses   atomic.Int64
 
 	// Image metrics
 	ImagesDownloaded  prometheus.Counter
@@ -221,7 +223,7 @@ func (m *Metrics) RecordCacheHit() {
 	if m.CacheHits != nil {
 		m.CacheHits.Inc()
 	}
-	m.cacheHits++
+	m.cacheHits.Add(1)
 	m.updateCacheRatio()
 }
 
@@ -230,17 +232,18 @@ func (m *Metrics) RecordCacheMiss() {
 	if m.CacheMisses != nil {
 		m.CacheMisses.Inc()
 	}
-	m.cacheMisses++
+	m.cacheMisses.Add(1)
 	m.updateCacheRatio()
 }
 
 // updateCacheRatio calculates and updates the cache hit ratio
 func (m *Metrics) updateCacheRatio() {
 	if m.CacheHitRatio != nil {
-		total := m.cacheHits + m.cacheMisses
+		hits := m.cacheHits.Load()
+		misses := m.cacheMisses.Load()
+		total := hits + misses
 		if total > 0 {
-			ratio := float64(m.cacheHits) / float64(total)
-			m.CacheHitRatio.Set(ratio)
+			m.CacheHitRatio.Set(float64(hits) / float64(total))
 		}
 	}
 }

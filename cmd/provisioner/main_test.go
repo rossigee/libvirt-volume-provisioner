@@ -7,6 +7,7 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/internal/config"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInitTracing_NoEndpoint(t *testing.T) {
@@ -42,7 +43,7 @@ func TestLogCorrelationHook(t *testing.T) {
 
 	// Should not panic even without span context
 	assert.NotPanics(t, func() {
-		hook.Fire(entry)
+		require.NoError(t, hook.Fire(entry))
 	})
 }
 
@@ -58,7 +59,7 @@ func TestLogCorrelationHook_WithSpan(t *testing.T) {
 	}
 
 	// Fire hook - should add trace_id and span_id if span exists
-	hook.Fire(entry)
+	require.NoError(t, hook.Fire(entry))
 
 	// Since no span is active, no trace fields should be added
 	assert.NotContains(t, entry.Data, "trace_id")

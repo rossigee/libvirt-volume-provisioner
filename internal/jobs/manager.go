@@ -269,7 +269,7 @@ func (m *Manager) RecoverJobs() error {
 	}
 
 	logrus.Info("Recovering jobs from previous run...")
-	if err := m.store.MarkInProgressJobsFailed(); err != nil {
+	if err := m.store.MarkInProgressJobsFailed(context.Background()); err != nil {
 		return fmt.Errorf("failed to mark in-progress jobs as failed: %w", err)
 	}
 	logrus.Info("Job recovery completed")
@@ -866,6 +866,8 @@ func (m *Manager) FetchImageToCache(ctx context.Context, req types.FetchImageToC
 	m.mu.Lock()
 	m.jobs[jobID] = job
 	m.mu.Unlock()
+
+	m.syncToDatabase(context.Background(), job) //nolint:contextcheck
 
 	go m.runCacheJob(jobCtx, job) //nolint:contextcheck // intentional: job outlives the HTTP request
 	return jobID, nil

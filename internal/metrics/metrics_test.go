@@ -8,34 +8,30 @@ import (
 
 // createMockMetrics creates metrics without actual Prometheus registration for testing
 func createMockMetrics() *Metrics {
-	// Create a minimal metrics instance for testing logic without Prometheus registration
-	return &Metrics{
-		cacheHits:   0,
-		cacheMisses: 0,
-	}
+	return &Metrics{}
 }
 
 func TestCacheHitRatio(t *testing.T) {
 	metrics := createMockMetrics()
 
 	// Test initial state
-	assert.Equal(t, int64(0), metrics.cacheHits)
-	assert.Equal(t, int64(0), metrics.cacheMisses)
+	assert.Equal(t, int64(0), metrics.cacheHits.Load())
+	assert.Equal(t, int64(0), metrics.cacheMisses.Load())
 
 	// Test cache hit
 	metrics.RecordCacheHit()
-	assert.Equal(t, int64(1), metrics.cacheHits)
-	assert.Equal(t, int64(0), metrics.cacheMisses)
+	assert.Equal(t, int64(1), metrics.cacheHits.Load())
+	assert.Equal(t, int64(0), metrics.cacheMisses.Load())
 
 	// Test cache miss
 	metrics.RecordCacheMiss()
-	assert.Equal(t, int64(1), metrics.cacheHits)
-	assert.Equal(t, int64(1), metrics.cacheMisses)
+	assert.Equal(t, int64(1), metrics.cacheHits.Load())
+	assert.Equal(t, int64(1), metrics.cacheMisses.Load())
 
 	// Test another hit
 	metrics.RecordCacheHit()
-	assert.Equal(t, int64(2), metrics.cacheHits)
-	assert.Equal(t, int64(1), metrics.cacheMisses)
+	assert.Equal(t, int64(2), metrics.cacheHits.Load())
+	assert.Equal(t, int64(1), metrics.cacheMisses.Load())
 }
 
 func TestRecordImageDownload(t *testing.T) {

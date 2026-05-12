@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ type ExternalLogHook struct {
 	bufferMux sync.Mutex
 	ticker    *time.Ticker
 	stopChan  chan struct{}
+	closeOnce sync.Once
 }
 
 // NewExternalLogHook creates a new external log hook
@@ -163,6 +165,7 @@ func (h *ExternalLogHook) sendLogs(logs []map[string]interface{}) {
 		return
 	}
 	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		if closeErr := resp.Body.Close(); closeErr != nil {
 			logrus.StandardLogger().WithError(closeErr).Error("Failed to close response body")
 		}
@@ -178,7 +181,9 @@ func (h *ExternalLogHook) sendLogs(logs []map[string]interface{}) {
 
 // Close stops the background worker and flushes remaining logs
 func (h *ExternalLogHook) Close() {
-	close(h.stopChan)
+	h.closeOnce.Do(func() {
+		close(h.stopChan)
+	})
 }
 
 // LokiHook sends logs to Grafana Loki
@@ -251,6 +256,7 @@ func (h *LokiHook) Fire(entry *logrus.Entry) error {
 		return nil
 	}
 	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		if closeErr := resp.Body.Close(); closeErr != nil {
 			logrus.StandardLogger().WithError(closeErr).Error("Failed to close Loki response body")
 		}

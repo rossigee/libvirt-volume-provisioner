@@ -177,7 +177,7 @@ func (s *Store) SaveJob(ctx context.Context, record *JobRecord) error {
 }
 
 // GetJob retrieves a job by ID
-func (s *Store) GetJob(id string) (*JobRecord, error) {
+func (s *Store) GetJob(ctx context.Context, id string) (*JobRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -185,7 +185,7 @@ func (s *Store) GetJob(id string) (*JobRecord, error) {
 	var createdAtUnix, updatedAtUnix int64
 	var completedAtUnix *int64
 
-	err := s.db.QueryRowContext(context.Background(),
+	err := s.db.QueryRowContext(ctx,
 		`SELECT id, status, request_json, progress_json, error_message,
 		        retry_count, created_at, updated_at, completed_at
 		 FROM jobs WHERE id = ?`,
@@ -227,7 +227,7 @@ type ListJobsFilter struct {
 }
 
 // ListJobs retrieves jobs with optional filtering
-func (s *Store) ListJobs(filter ListJobsFilter) ([]*JobRecord, error) {
+func (s *Store) ListJobs(ctx context.Context, filter ListJobsFilter) ([]*JobRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -250,7 +250,7 @@ func (s *Store) ListJobs(filter ListJobsFilter) ([]*JobRecord, error) {
 	query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
 	args = append(args, filter.Limit, filter.Offset)
 
-	rows, err := s.db.QueryContext(context.Background(), query, args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query jobs: %w", err)
 	}
@@ -298,12 +298,12 @@ func (s *Store) ListJobs(filter ListJobsFilter) ([]*JobRecord, error) {
 }
 
 // MarkInProgressJobsFailed marks all running/pending jobs as failed (called at startup)
-func (s *Store) MarkInProgressJobsFailed() error {
+func (s *Store) MarkInProgressJobsFailed(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now().Unix()
-	_, err := s.db.ExecContext(context.Background(),
+	_, err := s.db.ExecContext(ctx,
 		`UPDATE jobs
 		 SET status = ?, error_message = ?, updated_at = ?, completed_at = ?
 		 WHERE status IN (?, ?)`,
@@ -323,13 +323,13 @@ func (s *Store) MarkInProgressJobsFailed() error {
 }
 
 // DeleteOldJobs deletes jobs older than the specified duration (for cleanup)
-func (s *Store) DeleteOldJobs(olderThan time.Duration) error {
+func (s *Store) DeleteOldJobs(ctx context.Context, olderThan time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	cutoff := time.Now().Add(-olderThan).Unix()
 
-	result, err := s.db.ExecContext(context.Background(),
+	result, err := s.db.ExecContext(ctx,
 		`DELETE FROM jobs
 		 WHERE status IN (?, ?) AND updated_at < ?`,
 		string(types.StatusCompleted),
@@ -377,12 +377,12 @@ func timeToUnixPtr(t *time.Time) interface{} {
 }
 
 // GetJobCount returns the count of jobs with a given status
-func (s *Store) GetJobCount(status string) (int, error) {
+func (s *Store) GetJobCount(ctx context.Context, status string) (int, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var count int
-	err := s.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM jobs WHERE status = ?", status).Scan(&count)
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM jobs WHERE status = ?", status).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get job count: %w", err)
 	}

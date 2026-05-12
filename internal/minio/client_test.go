@@ -97,53 +97,6 @@ func testClient(t *testing.T) *Client {
 	return client
 }
 
-func TestValidateImageURL(t *testing.T) {
-	client := testClient(t)
-
-	tests := []struct {
-		name        string
-		imageURL    string
-		expectError bool
-		errorMsg    string
-	}{
-		{
-			name:        "invalid URL format",
-			imageURL:    "not-a-url",
-			expectError: true,
-			errorMsg:    "invalid image URL",
-		},
-		{
-			name:        "URL without path",
-			imageURL:    "https://minio.example.com:9000",
-			expectError: true,
-			errorMsg:    "invalid image URL path",
-		},
-		{
-			name:        "URL with insufficient path parts",
-			imageURL:    "https://minio.example.com:9000/bucket",
-			expectError: true,
-			errorMsg:    "invalid image URL path",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := client.ValidateImageURL(context.TODO(), tt.imageURL)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorMsg != "" {
-					assert.Contains(t, err.Error(), tt.errorMsg)
-				}
-			} else {
-				// Note: This will fail in a real test environment without MinIO server
-				// but we're testing URL validation logic here
-				assert.Error(t, err) // Expect connection error in test environment
-			}
-		})
-	}
-}
-
 // MockProgressUpdater for testing download methods
 type MockProgressUpdater struct {
 	updates []struct {

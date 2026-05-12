@@ -35,7 +35,6 @@ type ServerConfig struct {
 // AccessKey and SecretKey may be overridden via MINIO_ACCESS_KEY / MINIO_SECRET_KEY env vars.
 type MinIOConfig struct {
 	Endpoint       string `yaml:"endpoint"`
-	Bucket         string `yaml:"bucket"`
 	AccessKey      string `yaml:"access_key"`
 	SecretKey      string `yaml:"secret_key"`
 	CACert         string `yaml:"ca_cert"`
