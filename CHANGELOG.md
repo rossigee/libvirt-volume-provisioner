@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.3] - 2026-05-12
+
+### Fixed
+- **Metrics data race**: `cacheHits` and `cacheMisses` counters replaced with `atomic.Int64`
+  to eliminate a concurrent read/write data race in `RecordCacheHit`/`RecordCacheMiss`.
+- **Trace correlation hook not active**: `logCorrelationHook.Fire` was missing its `error`
+  return value (preventing compilation as a valid `logrus.Hook`) and the hook was never
+  registered. Both issues are now fixed; the hook is registered when OTLP tracing is enabled.
+- **FetchImageToCache job not persisted**: Cache-fetch jobs were added to the in-memory map but
+  not written to the database until the background goroutine ran — a crash between insertion and
+  first DB sync would lose the job. `syncToDatabase` is now called immediately after insertion.
+- **Timer leak in retry loop**: `time.After` in `retry.WithRetry` created a timer that was not
+  stopped on context cancellation, leaking it until it fired. Replaced with `time.NewTimer` +
+  `timer.Stop()` on the cancellation path.
+- **Double-close panic on webhook hook**: `ExternalLogHook.Close` could panic if called more
+  than once (e.g. from multiple deferred calls). Guarded with `sync.Once`.
+- **HTTP response bodies not drained**: `sendLogs` and `LokiHook.Fire` closed response bodies
+  without draining them first, preventing connection reuse. Added `io.Copy(io.Discard, ...)`.
+- **Store methods ignoring caller context**: `GetJob`, `ListJobs`, `GetJobCount`,
+  `MarkInProgressJobsFailed`, and `DeleteOldJobs` hardcoded `context.Background()` internally,
+  making cancellation impossible for callers. All now accept and propagate a `context.Context`.
+
+### Removed
+- **Dead `minio.Cleanup` method**: `os.Remove` wrapper that was never called by any code path.
+- **Dead `minio.ValidateImageURL` method**: Duplicated URL-parsing logic already present in
+  `downloadImageToPathOnce`; no call sites existed outside its own test.
+- **`MinIOConfig.Bucket` field**: The field was parsed from config but silently ignored — the
+  bucket is always extracted from the image URL at download time.
+
 ## [0.11.2] - 2026-05-12
 
 ### Added
