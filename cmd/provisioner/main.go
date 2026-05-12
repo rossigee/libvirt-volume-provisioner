@@ -41,7 +41,7 @@ var errOTLPNotConfigured = errors.New("OTLP not configured")
 
 // Build information - set at build time via -ldflags "-X main.version=... -X main.buildTime=..."
 var (
-	version   = "v0.11.1"
+	version   = "v0.11.2"
 	buildTime = "unknown"
 )
 
@@ -252,10 +252,15 @@ func main() {
 
 	appMetrics := metrics.NewMetrics()
 
+	jobTimeout := time.Duration(cfg.Libvirt.JobTimeoutMinutes) * time.Minute
 	jobManager := jobs.NewManager(
 		minioClient, lvmManager, libvirtPool, store, appMetrics,
-		cfg.Libvirt.MaxConcurrent, cacheMaxAge, cacheEvictionInterval,
+		cfg.Libvirt.MaxConcurrent, jobTimeout, cacheMaxAge, cacheEvictionInterval,
 	)
+
+	if err := jobManager.RecoverJobs(); err != nil {
+		logrus.WithError(err).Fatal("Failed to recover jobs from previous run")
+	}
 
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -268,7 +273,6 @@ func main() {
 	apiHandler := api.NewHandler(jobManager, appMetrics, version, cfg.Libvirt.MaxConcurrent)
 
 	api.SetupRoutes(router, apiHandler, authValidator.Middleware())
-	router.Use(authValidator.Middleware())
 
 	var srv *http.Server
 	if !authValidator.IsClientCALoaded() {

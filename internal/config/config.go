@@ -45,9 +45,10 @@ type MinIOConfig struct {
 
 // LibvirtConfig holds libvirt connection and pool settings.
 type LibvirtConfig struct {
-	URI           string `yaml:"uri"`
-	Pool          string `yaml:"pool"`
-	MaxConcurrent int    `yaml:"max_concurrent"`
+	URI               string `yaml:"uri"`
+	Pool              string `yaml:"pool"`
+	MaxConcurrent     int    `yaml:"max_concurrent"`
+	JobTimeoutMinutes int    `yaml:"job_timeout_minutes"`
 }
 
 // LVMConfig holds LVM manager settings.
@@ -98,9 +99,10 @@ func defaults() Config {
 			RetryBackoffMS: []int{100, 1000, 10000},
 		},
 		Libvirt: LibvirtConfig{
-			URI:           "qemu:///system",
-			Pool:          "images",
-			MaxConcurrent: 2,
+			URI:               "qemu:///system",
+			Pool:              "images",
+			MaxConcurrent:     2,
+			JobTimeoutMinutes: 30,
 		},
 		LVM: LVMConfig{
 			VolumeGroup:    "vg0",

@@ -416,46 +416,6 @@ func (s *Store) SaveStageRate(ctx context.Context, rate StageRate) error {
 	return nil
 }
 
-// GetStageWeights returns the fraction of total job time estimated for the download
-// and convert stages, derived from the average duration_ms of up to the 20 most
-// recent measurements for each stage.  If no history exists for a stage the
-// corresponding default value (in milliseconds) is used instead, so callers can
-// pass equal defaults (e.g. 1, 1) to get a 50/50 split on first run.
-func (s *Store) GetStageWeights(ctx context.Context, defaultDownloadMS, defaultConvertMS float64) (float64, float64) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	avgDuration := func(stage string) sql.NullFloat64 {
-		var avg sql.NullFloat64
-		_ = s.db.QueryRowContext(ctx,
-			`SELECT AVG(duration_ms) FROM (
-			     SELECT duration_ms FROM stage_rates
-			     WHERE stage = ?
-			     ORDER BY created_at DESC
-			     LIMIT 20
-			 )`, stage).Scan(&avg)
-		return avg
-	}
-
-	dlAvg := avgDuration("download")
-	cvAvg := avgDuration("convert")
-
-	dlTime := defaultDownloadMS
-	if dlAvg.Valid && dlAvg.Float64 > 0 {
-		dlTime = dlAvg.Float64
-	}
-	cvTime := defaultConvertMS
-	if cvAvg.Valid && cvAvg.Float64 > 0 {
-		cvTime = cvAvg.Float64
-	}
-
-	total := dlTime + cvTime
-	if total <= 0 {
-		return 0.5, 0.5
-	}
-	return dlTime / total, cvTime / total
-}
-
 // GetAverageRate gets the average rate for a stage from recent measurements
 func (s *Store) GetAverageRate(ctx context.Context, stage string, defaultRate float64) float64 {
 	s.mu.RLock()

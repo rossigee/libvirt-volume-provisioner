@@ -918,7 +918,7 @@ func TestNewManager_StartsEvictionLoop(t *testing.T) {
 		},
 	}
 
-	m := NewManager(nil, nil, pool, nil, nil, 2, time.Hour, 50*time.Millisecond)
+	m := NewManager(nil, nil, pool, nil, nil, 2, 30*time.Minute, time.Hour, 50*time.Millisecond)
 	defer m.Stop()
 
 	select {
@@ -931,7 +931,7 @@ func TestNewManager_StartsEvictionLoop(t *testing.T) {
 
 // TestNewManager_NilPool tests that NewManager does not start the eviction goroutine when pool is nil.
 func TestNewManager_NilPool(t *testing.T) {
-	m := NewManager(nil, nil, nil, nil, nil, 2, 168*time.Hour, time.Hour)
+	m := NewManager(nil, nil, nil, nil, nil, 2, 30*time.Minute, 168*time.Hour, time.Hour)
 	defer m.Stop()
 	assert.NotNil(t, m)
 	assert.NotNil(t, m.bgCancel)
@@ -943,7 +943,7 @@ func TestNewManager_SetsInitialDependencyMetrics(t *testing.T) {
 	met := appmetrics.NewMetrics()
 	pool := &mockLibvirtPool{}
 
-	m := NewManager(nil, nil, pool, nil, met, 2, 168*time.Hour, time.Hour)
+	m := NewManager(nil, nil, pool, nil, met, 2, 30*time.Minute, 168*time.Hour, time.Hour)
 	defer m.Stop()
 
 	// minio and storage are nil → 0; libvirt pool is non-nil → 1; lvm is nil → 0

@@ -17,6 +17,7 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/internal/config"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/retry"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/timing"
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -271,15 +272,13 @@ func (m *Manager) populateVolumeOnce(
 	go func() { waitDone <- cmd.Wait() }()
 
 	// Use stored convert rate to estimate duration for incremental progress ticks.
-	// Use conservative 50 MB/s default (SSD write speed for large sequential writes)
-	const defaultConvertRate float64 = 50 * 1024 * 1024 // 50 MB/s
 	var estimatedSeconds float64
 
 	// Guard against zero/empty image - no progress to report if there's no data
 	if imageSize > 0 {
-		estimatedSeconds = float64(imageSize) / defaultConvertRate // default estimate
+		estimatedSeconds = float64(imageSize) / timing.DefaultConvertRate // default estimate
 		if store != nil {
-			if rate := store.GetAverageRate(ctx, "convert", defaultConvertRate); rate > 0 {
+			if rate := store.GetAverageRate(ctx, "convert", timing.DefaultConvertRate); rate > 0 {
 				estimatedSeconds = float64(imageSize) / rate // use historical rate if available
 			}
 		}
@@ -293,7 +292,7 @@ func (m *Manager) populateVolumeOnce(
 		"volume_name":   volumeName,
 		"image_size":    imageSize,
 		"estimated_sec": estimatedSeconds,
-		"default_rate":  defaultConvertRate,
+		"default_rate":  timing.DefaultConvertRate,
 	}).Info("Starting volume conversion with progress tracking")
 
 	ticker := time.NewTicker(1 * time.Second)

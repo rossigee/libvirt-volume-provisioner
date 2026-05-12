@@ -126,12 +126,13 @@ type Manager struct {
 	semaphore   chan struct{}
 	mu          sync.RWMutex
 	bgCancel    context.CancelFunc
+	jobTimeout  time.Duration
 }
 
 // NewManager creates a new job manager.
 func NewManager(minioClient *minio.Client, lvmManager *lvm.Manager,
 	libvirtPool LibvirtPool, store *storage.Store, met *appmetrics.Metrics,
-	maxConcurrent int, cacheMaxAge, cacheEvictionInterval time.Duration) *Manager {
+	maxConcurrent int, jobTimeout, cacheMaxAge, cacheEvictionInterval time.Duration) *Manager {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	mgr := &Manager{
 		minioClient: minioClient,
@@ -142,6 +143,7 @@ func NewManager(minioClient *minio.Client, lvmManager *lvm.Manager,
 		jobs:        make(map[string]*Job),
 		semaphore:   make(chan struct{}, maxConcurrent),
 		bgCancel:    bgCancel,
+		jobTimeout:  jobTimeout,
 	}
 	if met != nil {
 		met.UpdateDependencyStatus("minio", minioClient != nil)
@@ -290,7 +292,7 @@ func (m *Manager) StartJob(ctx context.Context, req types.ProvisionRequest) (str
 	span.SetAttributes(attribute.String("job.id", jobID))
 
 	// Detached context — the HTTP request context is cancelled when the response is sent.
-	jobCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	jobCtx, cancel := context.WithTimeout(context.Background(), m.jobTimeout)
 
 	job := &Job{
 		ID:            jobID,
@@ -849,7 +851,7 @@ func (m *Manager) FetchImageToCache(ctx context.Context, req types.FetchImageToC
 	jobID := uuid.New().String()
 
 	// Detached context — the HTTP request context is cancelled when the response is sent.
-	jobCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	jobCtx, cancel := context.WithTimeout(context.Background(), m.jobTimeout)
 
 	job := &Job{
 		ID:         jobID,
@@ -949,7 +951,6 @@ func (m *Manager) runCacheJob(ctx context.Context, job *Job) {
 
 	job.mu.Lock()
 	job.ImagePath = imagePath
-	job.CacheHit = true
 	job.Status = types.StatusCompleted
 	job.mu.Unlock()
 }

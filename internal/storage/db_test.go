@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -318,104 +317,6 @@ func TestDeleteOldJobs(t *testing.T) {
 	job, err = store.GetJob("running-job")
 	require.NoError(t, err)
 	assert.Equal(t, "running-job", job.ID)
-}
-
-func TestGetStageWeights_NoHistory(t *testing.T) {
-	store, err := NewStore(":memory:")
-	require.NoError(t, err)
-	defer func() { _ = store.Close() }()
-
-	// With no history the equal defaults (1,1) should yield 50/50.
-	dl, cv := store.GetStageWeights(context.Background(), 1, 1)
-	assert.InDelta(t, 0.5, dl, 0.001)
-	assert.InDelta(t, 0.5, cv, 0.001)
-	assert.InDelta(t, 1.0, dl+cv, 0.001)
-}
-
-func TestGetStageWeights_WithHistory(t *testing.T) {
-	store, err := NewStore(":memory:")
-	require.NoError(t, err)
-	defer func() { _ = store.Close() }()
-
-	ctx := context.Background()
-	now := time.Now()
-
-	// Simulate three past jobs: download took ~20 s, convert took ~40 s each.
-	for i := 0; i < 3; i++ {
-		jobID := fmt.Sprintf("job-%d", i)
-		require.NoError(t, store.SaveStageRate(ctx, StageRate{
-			Stage:          "download",
-			RateBPS:        50 * 1024 * 1024,
-			BytesProcessed: 1024 * 1024 * 1024,
-			DurationMS:     20_000,
-			JobID:          jobID,
-			CreatedAt:      now,
-		}))
-		require.NoError(t, store.SaveStageRate(ctx, StageRate{
-			Stage:          "convert",
-			RateBPS:        200 * 1024 * 1024,
-			BytesProcessed: 10 * 1024 * 1024 * 1024,
-			DurationMS:     40_000,
-			JobID:          jobID,
-			CreatedAt:      now,
-		}))
-	}
-
-	dl, cv := store.GetStageWeights(ctx, 1, 1)
-	// avgDownload=20000, avgConvert=40000 → dl=1/3, cv=2/3
-	assert.InDelta(t, 1.0/3.0, dl, 0.001)
-	assert.InDelta(t, 2.0/3.0, cv, 0.001)
-	assert.InDelta(t, 1.0, dl+cv, 0.001)
-}
-
-func TestGetStageWeights_OnlyDownloadHistory(t *testing.T) {
-	store, err := NewStore(":memory:")
-	require.NoError(t, err)
-	defer func() { _ = store.Close() }()
-
-	ctx := context.Background()
-	require.NoError(t, store.SaveStageRate(ctx, StageRate{
-		Stage:     "download",
-		DurationMS: 30_000,
-		JobID:     "job-1",
-		CreatedAt: time.Now(),
-	}))
-
-	// No convert history; default for convert is 1 (same unit as the 1,1 defaults).
-	// With actual download avg=30000 and default convert=1: dl ≈ 1.0, cv ≈ 0.
-	// Using equal defaults (1,1): dl=30000/(30000+1) ≈ 1, cv≈0.
-	// More practically: caller passes meaningful defaults, e.g. 10000,10000.
-	dl, cv := store.GetStageWeights(ctx, 10_000, 10_000)
-	// avgDownload=30000 beats default 10000; convert falls back to 10000.
-	assert.InDelta(t, 30_000.0/40_000.0, dl, 0.001)
-	assert.InDelta(t, 10_000.0/40_000.0, cv, 0.001)
-	assert.InDelta(t, 1.0, dl+cv, 0.001)
-}
-
-func TestGetStageWeights_AlwaysSumToOne(t *testing.T) {
-	store, err := NewStore(":memory:")
-	require.NoError(t, err)
-	defer func() { _ = store.Close() }()
-
-	ctx := context.Background()
-	now := time.Now()
-
-	// Varied durations to stress the averaging.
-	durations := []int64{5_000, 15_000, 25_000, 10_000, 20_000}
-	for i, d := range durations {
-		jobID := fmt.Sprintf("job-%d", i)
-		require.NoError(t, store.SaveStageRate(ctx, StageRate{
-			Stage: "download", DurationMS: d, JobID: jobID, CreatedAt: now,
-		}))
-		require.NoError(t, store.SaveStageRate(ctx, StageRate{
-			Stage: "convert", DurationMS: d * 3, JobID: jobID, CreatedAt: now,
-		}))
-	}
-
-	dl, cv := store.GetStageWeights(ctx, 1, 1)
-	assert.InDelta(t, 1.0, dl+cv, 0.001, "weights must sum to 1")
-	assert.True(t, dl > 0 && dl < 1, "download weight must be in (0,1)")
-	assert.True(t, cv > 0 && cv < 1, "convert weight must be in (0,1)")
 }
 
 func TestSaveJob_WithCompletedAt(t *testing.T) {

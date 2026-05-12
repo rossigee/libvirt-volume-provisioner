@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.2] - 2026-05-12
+
+### Added
+- **Configurable job timeout**: New `libvirt.job_timeout_minutes` config field (default 30m),
+  replaces the previously hardcoded 30-minute timeout for provisioning and cache-fetch jobs.
+
+### Fixed
+- **Libvirt pool path resolution**: Pool target path is now resolved dynamically from the
+  libvirt pool XML descriptor instead of assuming `/var/lib/libvirt/<name>`. This fixes cache
+  operations on systems where the pool target path differs from the default.
+- **Cache job status**: Removed incorrect `CacheHit = true` flag set in `runCacheJob` for
+  newly cached images — only images served from an existing cache entry should be marked as
+  a cache hit.
+- **Auth middleware**: Fixed duplicate middleware registration that was applying the auth
+  validator twice to all routes.
+
+### Changed
+- **Path validation**: Relaxed hardcoded `/var/lib/libvirt/` prefix check in
+  `CalculateChecksum` and image download — now only rejects `..` path traversal as a
+  belt-and-suspenders guard, matching the caller (e.g. `AllocateImageFile`).
+- **Default convert rate**: Replaced hardcoded 50 MB/s default in `populateVolumeOnce` with
+  the shared `timing.DefaultConvertRate` constant (200 MB/s).
+- **Dead code removal**: Removed unused `GetStageWeights` method and its associated tests.
+
 ## [0.11.1] - 2026-05-12
 
 ### Fixed

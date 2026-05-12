@@ -4,6 +4,7 @@ package libvirt
 
 import (
 	"crypto/sha256"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"os"
@@ -31,6 +32,13 @@ type PoolManager struct {
 	poolPath string
 }
 
+// poolTargetXML is used to parse the pool's target path out of its XML descriptor.
+type poolTargetXML struct {
+	Target struct {
+		Path string `xml:"path"`
+	} `xml:"target"`
+}
+
 // NewPoolManager creates a new libvirt pool manager from the provided configuration.
 func NewPoolManager(cfg config.LibvirtConfig) (*PoolManager, error) {
 	conn, err := libvirt.NewConnect(cfg.URI)
@@ -41,16 +49,47 @@ func NewPoolManager(cfg config.LibvirtConfig) (*PoolManager, error) {
 	pm := &PoolManager{
 		conn:     conn,
 		poolName: cfg.Pool,
-		poolPath: fmt.Sprintf("/var/lib/libvirt/%s", cfg.Pool),
+		poolPath: fmt.Sprintf("/var/lib/libvirt/%s", cfg.Pool), // default used only if pool must be created
 	}
 
 	// Ensure the pool exists and is active
 	if err := pm.ensurePool(); err != nil {
-		_, _ = conn.Close() // Ignore close error
+		_, _ = conn.Close()
 		return nil, fmt.Errorf("failed to ensure pool exists: %w", err)
 	}
 
+	// Resolve the actual pool target path from the libvirt pool definition.
+	actualPath, err := pm.resolvePoolPath()
+	if err != nil {
+		_, _ = conn.Close()
+		return nil, fmt.Errorf("failed to resolve pool path: %w", err)
+	}
+	pm.poolPath = actualPath
+
 	return pm, nil
+}
+
+// resolvePoolPath queries the pool's XML descriptor and returns its target path.
+func (pm *PoolManager) resolvePoolPath() (string, error) {
+	pool, err := pm.conn.LookupStoragePoolByName(pm.poolName)
+	if err != nil {
+		return "", fmt.Errorf("failed to look up pool %q: %w", pm.poolName, err)
+	}
+	defer func() { _ = pool.Free() }()
+
+	xmlDesc, err := pool.GetXMLDesc(0)
+	if err != nil {
+		return "", fmt.Errorf("failed to get XML for pool %q: %w", pm.poolName, err)
+	}
+
+	var parsed poolTargetXML
+	if err := xml.Unmarshal([]byte(xmlDesc), &parsed); err != nil {
+		return "", fmt.Errorf("failed to parse XML for pool %q: %w", pm.poolName, err)
+	}
+	if parsed.Target.Path == "" {
+		return "", fmt.Errorf("pool %q XML has empty target path", pm.poolName)
+	}
+	return parsed.Target.Path, nil
 }
 
 // Close closes the libvirt connection
@@ -208,14 +247,14 @@ func (pm *PoolManager) CreateCacheEntry(imagePath, checksum string) error {
 	return nil
 }
 
-// CalculateChecksum calculates SHA256 checksum of a file
+// CalculateChecksum calculates SHA256 checksum of a file.
+// filePath must be an absolute path with no ".." components.
 func CalculateChecksum(filePath string) (string, error) {
-	// Validate path to prevent directory traversal
-	if strings.Contains(filePath, "..") || !strings.HasPrefix(filePath, "/var/lib/libvirt/") {
+	if strings.Contains(filePath, "..") {
 		return "", fmt.Errorf("invalid file path: %s", filePath)
 	}
 
-	file, err := os.Open(filePath) // #nosec G304 -- Path validated above
+	file, err := os.Open(filePath) // #nosec G304 -- path is caller-controlled; traversal checked above
 	if err != nil {
 		return "", fmt.Errorf("failed to open file for checksum: %w", err)
 	}
