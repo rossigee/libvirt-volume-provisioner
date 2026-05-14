@@ -4,6 +4,9 @@ FROM golang:1.26.3-alpine AS builder
 # Set working directory
 WORKDIR /app
 
+# Install build dependencies required for CGO (libvirt bindings)
+RUN apk add --no-cache build-base libvirt-dev
+
 # Copy go mod files
 COPY go.mod go.sum ./
 
@@ -13,14 +16,14 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the binary
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o libvirt-volume-provisioner ./cmd/provisioner
+# Build the binary (CGO required for libvirt-go)
+RUN CGO_ENABLED=1 GOOS=linux go build -o libvirt-volume-provisioner ./cmd/provisioner
 
 # Final stage
 FROM alpine:latest
 
-# Install ca-certificates for HTTPS requests
-RUN apk --no-cache add ca-certificates
+# Install ca-certificates and libvirt runtime library
+RUN apk --no-cache add ca-certificates libvirt
 
 # Create non-root user
 RUN adduser -D -s /bin/sh appuser
