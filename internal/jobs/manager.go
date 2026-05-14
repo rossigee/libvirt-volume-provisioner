@@ -115,9 +115,15 @@ type LibvirtPool interface {
 	EvictExpiredImages(maxAge time.Duration) (int, error)
 }
 
+// MinioClient is the interface Manager uses to interact with MinIO.
+type MinioClient interface {
+	GetObjectContent(ctx context.Context, bucketName, objectName string) ([]byte, error)
+	DownloadImageToPath(ctx context.Context, imageURL, destPath string, updater minio.ProgressUpdater) error
+}
+
 // Manager manages volume provisioning jobs.
 type Manager struct {
-	minioClient *minio.Client
+	minioClient MinioClient
 	jobs        map[string]*Job
 	lvmManager  *lvm.Manager
 	libvirtPool LibvirtPool
@@ -130,7 +136,7 @@ type Manager struct {
 }
 
 // NewManager creates a new job manager.
-func NewManager(minioClient *minio.Client, lvmManager *lvm.Manager,
+func NewManager(minioClient MinioClient, lvmManager *lvm.Manager,
 	libvirtPool LibvirtPool, store *storage.Store, met *appmetrics.Metrics,
 	maxConcurrent int, jobTimeout, cacheMaxAge, cacheEvictionInterval time.Duration) *Manager {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
@@ -749,7 +755,21 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 	localChecksum, checksumErr := libvirt.CalculateChecksum(imagePath)
 	if checksumErr != nil {
 		logrus.WithError(checksumErr).Warn("Failed to calculate local checksum for downloaded image")
-	} else {
+	}
+
+	if hasRemoteChecksum && checksumErr == nil {
+		if localChecksum != remoteChecksum {
+			_ = m.libvirtPool.DeleteImage(imagePath)
+			return "", fmt.Errorf("downloaded image checksum mismatch: got %s, expected %s "+
+					"(possible corruption or supply chain attack)", localChecksum, remoteChecksum)
+		}
+		logrus.WithFields(logrus.Fields{
+			"job_id":     job.ID,
+			"image_path": imagePath,
+		}).Debug("Downloaded image checksum verified against remote")
+	}
+
+	if checksumErr == nil {
 		if err := m.libvirtPool.CreateCacheEntry(imagePath, localChecksum); err != nil {
 			logrus.WithError(err).Warn("Failed to create cache entry")
 		}
