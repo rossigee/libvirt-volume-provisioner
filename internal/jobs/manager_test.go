@@ -2,12 +2,18 @@ package jobs
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	appmetrics "github.com/rossigee/libvirt-volume-provisioner/internal/metrics"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/lvm"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/minio"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
@@ -20,11 +26,15 @@ type mockLibvirtPool struct {
 	evictErr     error
 	evictedCount int
 	deletedPaths []string
+	cacheDir     string // if set, AllocateImageFile creates files here
 }
 
 //nolint:nilnil // matches real CheckCache "not found" semantic
 func (m *mockLibvirtPool) CheckCache(_ string) (*libvirt.ImageCache, error) { return nil, nil }
 func (m *mockLibvirtPool) AllocateImageFile(cacheKey string) (string, error) {
+	if m.cacheDir != "" {
+		return filepath.Join(m.cacheDir, cacheKey), nil
+	}
 	return "/tmp/cache/" + cacheKey, nil
 }
 func (m *mockLibvirtPool) CreateCacheEntry(_, _ string) error { return nil }
@@ -40,6 +50,37 @@ func (m *mockLibvirtPool) ListCachedImages() ([]*libvirt.ImageCache, error) {
 }
 func (m *mockLibvirtPool) EvictExpiredImages(_ time.Duration) (int, error) {
 	return m.evictedCount, m.evictErr
+}
+
+// mockMinioClient implements MinioClient for unit tests.
+type mockMinioClient struct {
+	getObjectContentFunc func(ctx context.Context, bucketName, objectName string) ([]byte, error)
+	downloadContent      []byte
+	downloadErr          error
+	downloadCalls        []struct{ imageURL, destPath string }
+}
+
+func (m *mockMinioClient) GetObjectContent(ctx context.Context, bucketName, objectName string) ([]byte, error) {
+	if m.getObjectContentFunc != nil {
+		return m.getObjectContentFunc(ctx, bucketName, objectName)
+	}
+	return nil, fmt.Errorf("no remote checksum available")
+}
+
+func (m *mockMinioClient) DownloadImageToPath(_ context.Context, imageURL, destPath string,
+	_ minio.ProgressUpdater) error {
+	m.downloadCalls = append(m.downloadCalls, struct{ imageURL, destPath string }{imageURL, destPath})
+	if m.downloadErr != nil {
+		return m.downloadErr
+	}
+	content := m.downloadContent
+	if content == nil {
+		content = []byte("test-image-content")
+	}
+	if err := os.WriteFile(destPath, content, 0644); err != nil {
+		return fmt.Errorf("failed to write mock download: %w", err)
+	}
+	return nil
 }
 
 // TestJobUpdateProgress tests the weighted progress mapping in UpdateProgress.
@@ -1023,4 +1064,140 @@ func TestGetJobCacheInfo_Enhanced(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, cacheHit)
 	assert.Empty(t, imagePath)
+}
+
+// testContent is the content written by mockMinioClient.DownloadImageToPath.
+var testContent = []byte("test-image-content")
+
+// testContentChecksum is the SHA256 of testContent.
+var testContentChecksum = func() string {
+	h := sha256.Sum256(testContent)
+	return hex.EncodeToString(h[:])
+}()
+
+func TestGetOrDownloadImage_ChecksumMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	mockMinio := &mockMinioClient{
+		getObjectContentFunc: func(_ context.Context, _, _ string) ([]byte, error) {
+			return []byte(testContentChecksum), nil
+		},
+	}
+	mockPool := &mockLibvirtPool{cacheDir: tmpDir}
+	store, err := storage.NewStore(":memory:")
+	assert.NoError(t, err)
+
+	manager := &Manager{
+		minioClient: mockMinio,
+		lvmManager:  &lvm.Manager{},
+		libvirtPool: mockPool,
+		store:       store,
+		jobs:        make(map[string]*Job),
+	}
+
+	req := types.ProvisionRequest{
+		ImageURL:     "http://minio/bucket/image.qcow2",
+		VolumeName:   "test-volume",
+		VolumeSizeGB: 10,
+	}
+	job := &Job{
+		ID:      "test-checksum-match",
+		Request: req,
+	}
+
+	path, err := manager.getOrDownloadImage(context.Background(), req, job)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, path)
+
+	// Verify cache entry was created
+	_, err = os.Stat(path)
+	assert.NoError(t, err, "downloaded image should exist")
+
+	// Verify no deletion happened
+	assert.Empty(t, mockPool.deletedPaths, "no files should be deleted on match")
+
+	// Verify download was called
+	assert.Len(t, mockMinio.downloadCalls, 1)
+}
+
+func TestGetOrDownloadImage_ChecksumMismatch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	mockMinio := &mockMinioClient{
+		getObjectContentFunc: func(_ context.Context, _, _ string) ([]byte, error) {
+			return []byte("0000000000000000000000000000000000000000000000000000000000000000"), nil
+		},
+	}
+	mockPool := &mockLibvirtPool{cacheDir: tmpDir}
+	store, err := storage.NewStore(":memory:")
+	assert.NoError(t, err)
+
+	manager := &Manager{
+		minioClient: mockMinio,
+		lvmManager:  &lvm.Manager{},
+		libvirtPool: mockPool,
+		store:       store,
+		jobs:        make(map[string]*Job),
+	}
+
+	req := types.ProvisionRequest{
+		ImageURL:     "http://minio/bucket/image.qcow2",
+		VolumeName:   "test-volume",
+		VolumeSizeGB: 10,
+	}
+	job := &Job{
+		ID:      "test-checksum-mismatch",
+		Request: req,
+	}
+
+	path, err := manager.getOrDownloadImage(context.Background(), req, job)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "checksum mismatch")
+	assert.Empty(t, path)
+
+	// Verify the mismatched file was deleted
+	assert.Len(t, mockPool.deletedPaths, 1)
+	assert.NotEmpty(t, mockPool.deletedPaths[0])
+}
+
+func TestGetOrDownloadImage_NoRemoteChecksum(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	mockMinio := &mockMinioClient{
+		getObjectContentFunc: func(_ context.Context, _, _ string) ([]byte, error) {
+			return nil, fmt.Errorf("no such file")
+		},
+	}
+	mockPool := &mockLibvirtPool{cacheDir: tmpDir}
+	store, err := storage.NewStore(":memory:")
+	assert.NoError(t, err)
+
+	manager := &Manager{
+		minioClient: mockMinio,
+		lvmManager:  &lvm.Manager{},
+		libvirtPool: mockPool,
+		store:       store,
+		jobs:        make(map[string]*Job),
+	}
+
+	req := types.ProvisionRequest{
+		ImageURL:     "http://minio/bucket/image.qcow2",
+		VolumeName:   "test-volume",
+		VolumeSizeGB: 10,
+	}
+	job := &Job{
+		ID:      "test-no-remote-checksum",
+		Request: req,
+	}
+
+	path, err := manager.getOrDownloadImage(context.Background(), req, job)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, path)
+
+	// Verify file exists
+	_, err = os.Stat(path)
+	assert.NoError(t, err)
+
+	// Verify no deletion happened
+	assert.Empty(t, mockPool.deletedPaths)
 }
