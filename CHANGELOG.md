@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.4] - 2026-05-17
+
+### Changed
+- CI refactored for multi-arch consistency: split into separate test/lint/security/docker jobs,
+  added gosec security scanning, switched to golangci-lint-action, and enabled Docker Buildx
+  for linux/amd64 + linux/arm64 image builds.
+- Release workflow now uses native ubuntu-24.04-arm runners for arm64 .deb packages.
+- Makefile: DEB_ARCH auto-detected via dpkg; build-linux no longer hardcodes amd64.
+- golangci-lint config migrated to v2 schema (linters.settings, linters.exclusions.rules).
+
 ## [0.11.3] - 2026-05-12
 
 ### Fixed
