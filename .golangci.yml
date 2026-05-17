@@ -3,7 +3,6 @@ version: "2"
 
 run:
   timeout: 5m
-  issues.exclude-dirs-use-default: true
 
 linters:
   default: none
@@ -72,58 +71,43 @@ linters:
     - zerologlint
   disable:
     - revive  # Package name 'api' is standard for HTTP API handlers
-    - gosec  # Excluding false positives not working in v2 config
-
-linters-settings:
-  errcheck:
-    check-blank: true
-    check-type-assertions: true
-
-  lll:
-    line-length: 120
-    tab-width: 2
-
-  gosec:
-    severity: medium
-    confidence: medium
-
-  godox:
-    keywords:
-      - BUG
-      - FIXME
-      - HACK
-      - NOTE
-      - TODO
+    - gosec   # Excluding false positives not working in v2 config
+  settings:
+    lll:
+      line-length: 120
+    gosec:
+      severity: medium
+      confidence: medium
+  exclusions:
+    rules:
+      - path: "_test\\.go$"
+        linters:
+          - gosec
+          - noctx
+          - revive
+          - wrapcheck
+      - path: "mocks"
+        linters:
+          - unused
+      - path: "internal/auth/certificates\\.go"
+        linters:
+          - gosec
+      - path: "internal/libvirt/pool\\.go"
+        linters:
+          - gosec
+      - path: "internal/lvm"
+        linters:
+          - gosec
+      - path: "internal/minio/client\\.go"
+        linters:
+          - gosec
+      - path: "internal/storage/db_test\\.go"
+        linters:
+          - gosec
+      - path: "internal/jobs/manager\\.go"
+        linters:
+          - gosec
 
 issues:
-  exclude-rules:
-    - path: "_test\\.go$"
-      linters:
-        - gosec
-        - noctx
-        - revive
-        - wrapcheck
-    - path: "mocks"
-      linters:
-        - unused
-    - path: "internal/auth/certificates\\.go"
-      linters:
-        - gosec
-    - path: "internal/libvirt/pool\\.go"
-      linters:
-        - gosec
-    - path: "internal/lvm"
-      linters:
-        - gosec
-      text: ""
-    - path: "internal/minio/client\\.go"
-      linters:
-        - gosec
-    - path: "internal/storage/db_test\\.go"
-      linters:
-        - gosec
-    - path: "internal/jobs/manager\\.go"
-      linters:
-        - gosec
   max-same-issues: 10
   max-issues-per-linter: 0
