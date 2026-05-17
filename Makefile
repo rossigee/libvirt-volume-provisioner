@@ -20,7 +20,7 @@ BINARY_UNIX=$(BINARY_NAME)_unix
 # Debian package parameters
 DEB_NAME=libvirt-volume-provisioner
 DEB_VERSION ?= 0.11.3
-DEB_ARCH=amd64
+DEB_ARCH ?= $(shell dpkg --print-architecture 2>/dev/null || echo amd64)
 DEB_BUILD_DIR=deb-build
 
 # Help
@@ -36,9 +36,9 @@ build: ## Build binary for current platform
 	$(GOMOD) tidy
 	$(GOBUILD) -o $(BINARY_NAME) -v ./$(MAIN_PACKAGE)
 
-# Build for Linux
-build-linux: ## Build binary for Linux amd64 (used by deb target)
-	CGO_ENABLED=1 CGO_CFLAGS="-Wno-discarded-qualifiers" GOOS=linux GOARCH=amd64 $(GOBUILD) -tags libsqlite3 -ldflags "-X main.version=$(DEB_VERSION) -X 'main.buildTime=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")'" -o $(BINARY_UNIX) -v ./$(MAIN_PACKAGE)
+# Build for Linux (native architecture)
+build-linux: ## Build binary for current Linux architecture (used by deb target)
+	CGO_ENABLED=1 CGO_CFLAGS="-Wno-discarded-qualifiers" GOOS=linux $(GOBUILD) -tags libsqlite3 -ldflags "-X main.version=$(DEB_VERSION) -X 'main.buildTime=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")'" -o $(BINARY_UNIX) -v ./$(MAIN_PACKAGE)
 
 # Test
 test: ## Run unit tests
