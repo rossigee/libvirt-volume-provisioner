@@ -19,7 +19,7 @@ BINARY_UNIX=$(BINARY_NAME)_unix
 
 # Debian package parameters
 DEB_NAME=libvirt-volume-provisioner
-DEB_VERSION ?= 0.11.3
+DEB_VERSION ?= 0.11.4
 DEB_ARCH ?= $(shell dpkg --print-architecture 2>/dev/null || echo amd64)
 DEB_BUILD_DIR=deb-build
 
