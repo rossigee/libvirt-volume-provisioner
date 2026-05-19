@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -178,6 +180,24 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 	// reject traversal as a belt-and-suspenders guard.
 	if strings.Contains(destPath, "..") {
 		return fmt.Errorf("invalid destination path: %s", destPath)
+	}
+
+	// Check available disk space before downloading — fail fast rather than
+	// start a download that will inevitably fail with ENOSPC and retry forever.
+	if totalSize > 0 {
+		var statfs syscall.Statfs_t
+		destDir := filepath.Dir(destPath)
+		if err := syscall.Statfs(destDir, &statfs); err != nil {
+			logrus.WithError(err).WithField("dir", destDir).Warn("disk space check skipped: statfs failed")
+		} else {
+			availableBytes := int64(statfs.Bavail) * statfs.Bsize
+			requiredBytes := int64(float64(totalSize) * 1.05) // 5% buffer for overhead
+			if availableBytes < requiredBytes {
+				return fmt.Errorf(
+					"insufficient disk space on %s: need %d bytes (with buffer), have %d available",
+					destDir, requiredBytes, availableBytes)
+			}
+		}
 	}
 
 	// Create or truncate destination file
