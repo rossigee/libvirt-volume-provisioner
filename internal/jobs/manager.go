@@ -752,6 +752,10 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 		}
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"job_id":     job.ID,
+		"image_path": imagePath,
+	}).Info("Calculating checksum of downloaded image")
 	localChecksum, checksumErr := libvirt.CalculateChecksum(imagePath)
 	if checksumErr != nil {
 		logrus.WithError(checksumErr).Warn("Failed to calculate local checksum for downloaded image")
@@ -764,9 +768,17 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 					"(possible corruption or supply chain attack)", localChecksum, remoteChecksum)
 		}
 		logrus.WithFields(logrus.Fields{
-			"job_id":     job.ID,
-			"image_path": imagePath,
-		}).Debug("Downloaded image checksum verified against remote")
+			"job_id":          job.ID,
+			"image_path":      imagePath,
+			"local_checksum":  localChecksum,
+			"remote_checksum": remoteChecksum,
+		}).Info("Downloaded image checksum verified against remote")
+	} else if !hasRemoteChecksum && checksumErr == nil {
+		logrus.WithFields(logrus.Fields{
+			"job_id":         job.ID,
+			"image_path":     imagePath,
+			"local_checksum": localChecksum,
+		}).Warn("No remote checksum available — skipping verification")
 	}
 
 	if checksumErr == nil {
