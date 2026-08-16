@@ -26,6 +26,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sys/unix"
 )
 
 // ProgressUpdater interface for updating job progress.
@@ -232,6 +233,27 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 	const minUpdateBytes = 1 * 1024 * 1024           // Update at least every 1MB
 	const minUpdateInterval = 200 * time.Millisecond // Update at least every 200ms
 
+	// cgroup v2 memory.max accounts page cache against the service's memory
+	// cgroup, not just heap/RSS. Without this, a plain buffered write of a
+	// multi-GB image accumulates dirty/clean page cache pages that count
+	// against MemoryMax and can trigger an OOM-kill even though the process
+	// itself never allocates more than a few MB. Sync + FADV_DONTNEED
+	// periodically to release pages back to the kernel once durably written,
+	// bounding cache growth to syncInterval regardless of total file size.
+	const syncInterval = 64 * 1024 * 1024 // 64MB
+	var syncedOffset int64
+	dropWrittenPages := func() error {
+		if err := destFile.Sync(); err != nil {
+			return fmt.Errorf("failed to sync destination file: %w", err)
+		}
+		length := downloaded - syncedOffset
+		if err := unix.Fadvise(int(destFile.Fd()), syncedOffset, length, unix.FADV_DONTNEED); err != nil {
+			logrus.WithError(err).Warn("fadvise(FADV_DONTNEED) failed; page cache may accumulate")
+		}
+		syncedOffset = downloaded
+		return nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -246,6 +268,12 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 			}
 			downloaded += int64(n)
 			bytesSinceUpdate += int64(n)
+
+			if downloaded-syncedOffset >= syncInterval {
+				if syncErr := dropWrittenPages(); syncErr != nil {
+					return syncErr
+				}
+			}
 
 			// Update progress frequently for smooth percentage increments
 			now := time.Now()
@@ -270,6 +298,13 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 		}
 		if err != nil {
 			return fmt.Errorf("failed to read from MinIO: %w", err)
+		}
+	}
+
+	// Drop any pages written since the last periodic sync.
+	if downloaded > syncedOffset {
+		if syncErr := dropWrittenPages(); syncErr != nil {
+			return syncErr
 		}
 	}
 
