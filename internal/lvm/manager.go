@@ -154,8 +154,17 @@ func (m *Manager) PopulateVolume(
 // qcow2ConvertArgs returns the qemu-img arguments to convert a qcow2 image
 // to raw and write it directly to devicePath. Extracted so tests can verify
 // the correct output target is used without running the command.
+//
+// -T none / -t none select O_DIRECT for the source read and target write
+// respectively. Without them qemu-img's reads and writes go through the
+// host page cache, which cgroup v2 memory.max accounts against this
+// service's memory cgroup exactly like RSS. A single ~20GB conversion is
+// enough to fill a 512MB limit with clean page cache alone (observed:
+// memory.stat anon=8MB, file=510MB), triggering OOM-kill/reclaim mid-write
+// and leaving a truncated or corrupted volume even though the daemon
+// itself never leaks heap.
 func qcow2ConvertArgs(imagePath, devicePath string) []string {
-	return []string{"convert", "-f", "qcow2", "-O", "raw", imagePath, devicePath}
+	return []string{"convert", "-f", "qcow2", "-O", "raw", "-T", "none", "-t", "none", imagePath, devicePath}
 }
 
 // populateVolumeOnce performs a single volume population attempt
