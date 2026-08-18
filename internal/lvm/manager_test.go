@@ -215,7 +215,21 @@ func TestQcow2ConvertArgs(t *testing.T) {
 	assert.Equal(t, "qcow2", args[2])
 	assert.Equal(t, "-O", args[3])
 	assert.Equal(t, "raw", args[4])
-	assert.Equal(t, imagePath, args[5])
+
+	// -T none / -t none select O_DIRECT for source reads and target writes, bypassing
+	// the host page cache. Without this, cgroup v2 memory.max accounts clean page
+	// cache from the conversion against the service the same as RSS, so a single
+	// large image conversion can fill the whole memory limit.
+	assert.Contains(t, args, "-T", "source cache mode flag must be present")
+	assert.Contains(t, args, "-t", "target cache mode flag must be present")
+	for i, arg := range args {
+		if arg == "-T" || arg == "-t" {
+			require.Less(t, i+1, len(args), "%s must be followed by a value", arg)
+			assert.Equal(t, "none", args[i+1], "%s must select O_DIRECT (none)", arg)
+		}
+	}
+
+	assert.Equal(t, imagePath, args[len(args)-2])
 
 	// The last argument must be the device path — not '-', '/dev/stdout', or anything else.
 	// Using '-' causes QEMU ≥10.1.0 to create a literal file named '-' in the CWD.
