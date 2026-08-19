@@ -23,10 +23,10 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-26.04
             platform: linux/amd64
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
             platform: linux/arm64
 
     steps:
@@ -84,7 +84,7 @@ jobs:
 
   docker:
     name: Create Multi-arch Manifest
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [build]
     steps:
     - name: Log in to GitHub Container Registry
@@ -111,7 +111,7 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [build, docker]
     steps:
     - name: Checkout
