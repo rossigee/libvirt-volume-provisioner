@@ -66,9 +66,17 @@ func NewClient(cfg config.MinIOConfig) (*Client, error) {
 		return nil, fmt.Errorf("invalid minio endpoint %q: missing hostname", cfg.Endpoint)
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"endpoint":   cfg.Endpoint,
+		"region":     cfg.Region,
+		"access_key": cfg.AccessKey,
+		"ca_cert":    cfg.CACert,
+	}).Debug("MinIO client options")
+
 	options := &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Secure: u.Scheme == "https",
+		Region: cfg.Region,
 	}
 
 	if u.Scheme == "https" {
@@ -95,7 +103,10 @@ func NewClient(cfg config.MinIOConfig) (*Client, error) {
 
 	_, err = minioClient.ListBuckets(context.Background())
 	if err != nil {
-		logrus.WithError(err).Warn("Failed to list buckets - MinIO connection test failed")
+		logrus.WithFields(logrus.Fields{
+			"error": err.Error(),
+			"region": cfg.Region,
+		}).Warn("Failed to list buckets - MinIO connection test failed")
 	} else {
 		logrus.Info("MinIO connection test successful")
 	}

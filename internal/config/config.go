@@ -37,6 +37,7 @@ type MinIOConfig struct {
 	Endpoint       string `yaml:"endpoint"`
 	AccessKey      string `yaml:"access_key"`
 	SecretKey      string `yaml:"secret_key"`
+	Region         string `yaml:"region"`
 	CACert         string `yaml:"ca_cert"`
 	RetryAttempts  int    `yaml:"retry_attempts"`
 	RetryBackoffMS []int  `yaml:"retry_backoff_ms"`

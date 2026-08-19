@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/metrics"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
+	"github.com/sirupsen/logrus"
 )
 
 // maxRequestBodyBytes caps the size of incoming JSON request bodies.
@@ -32,23 +34,36 @@ type JobManager interface {
 	DeleteCachedImage(cacheKey string) error
 }
 
+// VolumeContentManager handles uploading content to libvirt storage volumes
+type VolumeContentManager interface {
+	UploadVolumeContent(poolName, volumeName string, content io.Reader, contentSize int64) error
+}
+
 // Handler handles HTTP API requests
 type Handler struct {
-	jobManager    JobManager
-	metrics       *metrics.Metrics
-	version       string
-	startTime     time.Time
-	maxConcurrent int
+	jobManager          JobManager
+	volumeContentManager VolumeContentManager
+	metrics             *metrics.Metrics
+	version             string
+	startTime           time.Time
+	maxConcurrent       int
 }
 
 // NewHandler creates a new API handler
-func NewHandler(jobManager JobManager, metrics *metrics.Metrics, version string, maxConcurrent int) *Handler {
+func NewHandler(
+	jobManager JobManager,
+	volumeContentManager VolumeContentManager,
+	metrics *metrics.Metrics,
+	version string,
+	maxConcurrent int,
+) *Handler {
 	return &Handler{
-		jobManager:    jobManager,
-		metrics:       metrics,
-		version:       version,
-		startTime:     time.Now(),
-		maxConcurrent: maxConcurrent,
+		jobManager:          jobManager,
+		volumeContentManager: volumeContentManager,
+		metrics:             metrics,
+		version:             version,
+		startTime:           time.Now(),
+		maxConcurrent:       maxConcurrent,
 	}
 }
 
@@ -111,6 +126,9 @@ func SetupRoutes(router *gin.Engine, handler *Handler, authMiddleware gin.Handle
 		api.POST("/cache/fetch", handler.FetchImageToCache)
 		api.DELETE("/cache/images/:key", handler.DeleteCachedImage)
 	}
+
+	// Volume content upload (with auth) — for cloud-init ISO injection
+	router.PUT("/volumes/upload-content", authMiddleware, handler.UploadVolumeContent)
 
 	// Additional provision route for compatibility
 	router.POST("/provision", authMiddleware, handler.ProvisionVolume)
@@ -322,6 +340,66 @@ func (h *Handler) DeleteCachedImage(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "deleted", "key": key})
+}
+
+// UploadVolumeContent handles direct content upload to a libvirt storage volume.
+// The X-Volume-Name header specifies the volume name (e.g., "cidata-vmname.domain").
+// The X-Pool-Name header optionally specifies the pool (default: "cloud-init").
+// The request body is the raw content to write.
+func (h *Handler) UploadVolumeContent(c *gin.Context) {
+	if h.volumeContentManager == nil {
+		c.JSON(http.StatusServiceUnavailable, types.ErrorResponse{
+			Error:   "volume content upload not configured",
+			Message: "volume content manager is not available",
+			Code:    503,
+		})
+		return
+	}
+
+	volumeName := c.GetHeader("X-Volume-Name")
+	if volumeName == "" {
+		c.JSON(http.StatusBadRequest, types.ErrorResponse{
+			Error:   "invalid request",
+			Message: "X-Volume-Name header is required",
+			Code:    400,
+		})
+		return
+	}
+
+	poolName := c.GetHeader("X-Pool-Name")
+	if poolName == "" {
+		poolName = "cloud-init"
+	}
+
+	contentSize := c.Request.ContentLength
+	if contentSize <= 0 {
+		c.JSON(http.StatusBadRequest, types.ErrorResponse{
+			Error:   "invalid request",
+			Message: "Content-Length header is required and must be positive",
+			Code:    400,
+		})
+		return
+	}
+
+	if err := h.volumeContentManager.UploadVolumeContent(poolName, volumeName, c.Request.Body, contentSize); err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"pool":   poolName,
+			"volume": volumeName,
+		}).Error("Failed to upload volume content")
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{
+			Error:   "failed to upload volume content",
+			Message: err.Error(),
+			Code:    500,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":     "uploaded",
+		"pool":       poolName,
+		"volume":     volumeName,
+		"bytes":      contentSize,
+	})
 }
 
 // HealthCheck provides service health information
