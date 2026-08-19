@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-08-19
+
+### Added
+- **Volume content upload**: New `PUT /volumes/upload-content` API endpoint (auth-protected) uploads
+  raw content directly into an existing libvirt storage volume — used for cloud-init ISO injection.
+  Backed by a new `VolumeContentManager` and `PoolManager.UploadVolumeContent`.
+- **OTLP metrics filtering**: OpenTelemetry gin middleware now filters the `/metrics` scrape path so
+  request traces are not emitted for Prometheus scrapes.
+- **MinIO Region config**: New `minio.region` config field selects the MinIO/S3 region; the value is
+  passed to the client and surfaced in connection-test logging.
+
+### Fixed
+- **Page-cache OOM on convert**: `qemu-img convert` now opens the target with `O_DIRECT`, stopping the
+  kernel page cache from ballooning during large volume conversions.
+- **Page-cache OOM on download**: The page cache is now dropped after large image downloads to reclaim
+  memory and prevent OOM kills on the provisioner host.
+- **ENOSPC retry loop**: A pre-flight free-disk-space check runs before each image download, failing fast
+  instead of looping on `ENOSPC` retries.
+
+### Changed
+- **Checksum log level**: Image checksum verification is now logged at `Info` level so operators can see
+  verification results in normal logs.
+- **Go toolchain**: Updated to 1.26.6 (Docker base images and CI workflows).
+
 ## [0.11.4] - 2026-05-17
 
 ### Changed
