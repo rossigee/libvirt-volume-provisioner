@@ -41,7 +41,7 @@ var errOTLPNotConfigured = errors.New("OTLP not configured")
 
 // Build information - set at build time via -ldflags "-X main.version=... -X main.buildTime=..."
 var (
-	version   = "v0.11.3"
+	version   = "v0.11.5"
 	buildTime = "unknown"
 )
 
@@ -269,10 +269,12 @@ func main() {
 	router.Use(logger.RequestLogger())
 
 	if tp != nil {
-		router.Use(otelgin.Middleware("libvirt-volume-provisioner"))
+		router.Use(otelgin.Middleware("libvirt-volume-provisioner", otelgin.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/metrics"
+		})))
 	}
 
-	apiHandler := api.NewHandler(jobManager, appMetrics, version, cfg.Libvirt.MaxConcurrent)
+	apiHandler := api.NewHandler(jobManager, libvirtPool, appMetrics, version, cfg.Libvirt.MaxConcurrent)
 
 	api.SetupRoutes(router, apiHandler, authValidator.Middleware())
 

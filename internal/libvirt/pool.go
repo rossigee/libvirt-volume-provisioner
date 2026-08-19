@@ -361,6 +361,85 @@ func (pm *PoolManager) ListCachedImages() ([]*ImageCache, error) {
 	return cachedImages, nil
 }
 
+// UploadVolumeContent uploads raw content directly to a libvirt storage volume.
+// poolName is the name of the storage pool (e.g., "cloud-init").
+// volumeName is the name of the volume within that pool (e.g., "cidata-bankrut-master-cp-cd456.bankrut.lan").
+// content is the raw bytes to write to the volume.
+func (pm *PoolManager) UploadVolumeContent(poolName, volumeName string, content io.Reader, contentSize int64) error {
+	conn := pm.conn
+
+	pool, err := conn.LookupStoragePoolByName(poolName)
+	if err != nil {
+		return fmt.Errorf("failed to look up storage pool %q: %w", poolName, err)
+	}
+	defer func() {
+		if err := pool.Free(); err != nil {
+			logrus.WithError(err).Warning("failed to free pool")
+		}
+	}()
+
+	vol, err := pool.LookupStorageVolByName(volumeName)
+	if err != nil {
+		return fmt.Errorf("failed to look up volume %q in pool %q: %w", volumeName, poolName, err)
+	}
+	defer func() {
+		if err := vol.Free(); err != nil {
+			logrus.WithError(err).Warning("failed to free volume")
+		}
+	}()
+
+	volPath, err := vol.GetPath()
+	if err != nil {
+		return fmt.Errorf("failed to get volume path for %s: %w", volumeName, err)
+	}
+
+	stream, err := conn.NewStream(0)
+	if err != nil {
+		return fmt.Errorf("failed to create libvirt stream: %w", err)
+	}
+	defer func() {
+		if err := stream.Free(); err != nil {
+			logrus.WithError(err).Warning("failed to free stream")
+		}
+	}()
+
+	if err := vol.Upload(stream, 0, uint64(contentSize), 0); err != nil {
+		return fmt.Errorf("failed to initiate volume upload for %s: %w", volumeName, err)
+	}
+
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		n, readErr := content.Read(buf)
+		if n > 0 {
+			sent, sendErr := stream.Send(buf[:n])
+			if sendErr != nil {
+				return fmt.Errorf("failed to send data to stream for volume %s: %w", volumeName, sendErr)
+			}
+			written += int64(sent)
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
+			}
+			return fmt.Errorf("failed to read content for volume %s: %w", volumeName, readErr)
+		}
+	}
+
+	if err := stream.Finish(); err != nil {
+		return fmt.Errorf("failed to finish stream for volume %s (wrote %d bytes): %w", volumeName, written, err)
+	}
+
+	_ = volPath // path available for debugging if needed
+
+	logrus.WithFields(logrus.Fields{
+		"pool":   poolName,
+		"volume": volumeName,
+		"bytes":  written,
+	}).Info("Volume content uploaded successfully")
+	return nil
+}
+
 // EvictExpiredImages removes cached images whose .sha256 sidecar mtime is
 // older than maxAge. Individual delete failures are logged but non-fatal.
 func (pm *PoolManager) EvictExpiredImages(maxAge time.Duration) (int, error) {
