@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=libvirt-volume-provisioner
-Group=libvirt-volume-provisioner
+Group=libvirt-qemu
 # Credentials only — all other settings live in /etc/libvirt-volume-provisioner/config.yaml
 EnvironmentFile=-/etc/default/libvirt-volume-provisioner
 ExecStart=/usr/bin/libvirt-volume-provisioner --config /etc/libvirt-volume-provisioner/config.yaml
@@ -22,9 +22,11 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/libvirt-volume-provisioner,/var/lib/libvirt/images,/var/log/libvirt-volume-provisioner,/tmp,/run/lock/lvm
+ReadWritePaths=/var/lib/libvirt,/var/lib/libvirt-volume-provisioner,/var/lib/libvirt/images,/var/log/libvirt-volume-provisioner,/etc/libvirt-volume-provisioner,/tmp,/run/lock/lvm
 RestrictSUIDSGID=true
 PrivateDevices=no
+DeviceAllow=/dev/mapper/* rwm
+DeviceAllow=/dev/dm-* rwm
 
 # Resource limits
 MemoryMax=512M

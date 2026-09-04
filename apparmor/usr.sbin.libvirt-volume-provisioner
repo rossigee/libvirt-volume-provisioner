@@ -1,0 +1,111 @@
+# AppArmor profile for libvirt-volume-provisioner
+# Installed to /etc/apparmor.d/usr.sbin.libvirt-volume-provisioner by deb
+# See https://gitlab.com/apparmor/apparmor/-/wikis/QuickProfileLanguage
+
+#include <tunables/global>
+
+profile libvirt-volume-provisioner /usr/bin/libvirt-volume-provisioner flags=(attach_disconnected) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/openssl>
+  #include <abstractions/user-tmp>
+
+  capability dac_override,
+  capability dac_read_search,
+  capability chown,
+  capability fowner,
+  capability fsetid,
+  capability setgid,
+  capability setuid,
+  capability sys_admin,
+  capability sys_rawio,
+
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network netlink raw,
+
+  # Self - binary and libraries
+  /usr/bin/libvirt-volume-provisioner mr,
+  /usr/lib/** rm,
+  /lib/** rm,
+
+  # Go runtime - proc self
+  /proc/sys/kernel/random/uuid r,
+  /proc/self/** r,
+  owner /proc/sys/net/core/somaxconn r,
+
+  # Config, tokens, certs - site paths may be overridden in config.yaml,
+  # allow minimal set; local override can extend.
+  /etc/libvirt-volume-provisioner/** r,
+  /etc/libvirt-volume-provisioner/config.yaml r,
+  /etc/default/libvirt-volume-provisioner r,
+  /etc/ssl/certs/** r,
+  /etc/pki/** r,
+  /etc/hosts r,
+  /etc/nsswitch.conf r,
+  /etc/resolv.conf r,
+
+  # Database - sqlite jobs + stage rates
+  /var/lib/libvirt-volume-provisioner/** rwk,
+  /var/lib/libvirt-volume-provisioner/jobs.db rw,
+  /var/lib/libvirt-volume-provisioner/jobs.db-journal rw,
+  /var/lib/libvirt-volume-provisioner/jobs.db-wal rw,
+  /var/lib/libvirt-volume-provisioner/jobs.db-shm rw,
+
+  # Logs
+  /var/log/libvirt-volume-provisioner/** rw,
+
+  # Image cache via libvirt storage pool - default pool path
+  /var/lib/libvirt/** r,
+  /var/lib/libvirt/images/** rw,
+  # Fallback if pool path differs - local override can add
+
+  # Libvirt socket - qemu:///system
+  /run/libvirt/libvirt-sock rw,
+  /run/libvirt/** rw,
+  /var/run/libvirt/** rw,
+
+  # LVM - provisioner directly execs lvm tools (no sudo since v0.9)
+  /etc/lvm/lvm.conf r,
+  /run/lvm/** rw,
+  /run/lock/lvm/** rwk,
+  /dev/mapper/control rw,
+  /dev/mapper/** rw,
+  /dev/dm-[0-9]* rw,
+  /dev/data/* rw,
+  /dev/vg*/** rw,
+
+  /sbin/lvm ixr,
+  /sbin/lvs ixr,
+  /sbin/vgs ixr,
+  /sbin/pvs ixr,
+  /sbin/vgdisplay ixr,
+  /sbin/vgchange ixr,
+  /sbin/lvcreate ixr,
+  /sbin/lvremove ixr,
+  /sbin/lvchange ixr,
+  /sbin/lvdisplay ixr,
+  /sbin/lvscan ixr,
+  /bin/dd ixr,
+  /sbin/blkid ixr,
+  /usr/bin/blkid ixr,
+  /usr/bin/qemu-img ixr,
+  /usr/bin/qemu-img.bin ixr,
+
+  # qcow2 header read - temporary image files downloaded from MinIO
+  /tmp/** rw,
+  owner /tmp/** rw,
+
+  # CA bundle for MinIO TLS verification
+  /usr/share/ca-certificates/** r,
+  /etc/ca-certificates/** r,
+
+  # For journald logging via systemd
+  /run/systemd/journal/socket w,
+  /run/systemd/journal/stdout rw,
+
+  # Site-specific additions and overrides
+  include if exists <local/usr.sbin.libvirt-volume-provisioner>
+}

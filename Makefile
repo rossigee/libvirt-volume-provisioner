@@ -90,6 +90,12 @@ deb: build-linux ## Build Debian .deb package
 	# Copy systemd service file
 	cp libvirt-volume-provisioner.service $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME).service
 
+	# Install AppArmor profile
+	@mkdir -p $(DEB_BUILD_DIR)/etc/apparmor.d
+	@mkdir -p $(DEB_BUILD_DIR)/etc/apparmor.d/local
+	cp apparmor/usr.sbin.libvirt-volume-provisioner $(DEB_BUILD_DIR)/etc/apparmor.d/usr.sbin.libvirt-volume-provisioner
+	cp apparmor/local/usr.sbin.libvirt-volume-provisioner $(DEB_BUILD_DIR)/etc/apparmor.d/local/usr.sbin.libvirt-volume-provisioner
+
 	# Create database backup service
 	@echo "[Unit]" > $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.service
 	@echo "Description=Libvirt Volume Provisioner Database Backup" >> $(DEB_BUILD_DIR)/lib/systemd/system/$(DEB_NAME)-backup.service
@@ -118,7 +124,9 @@ deb: build-linux ## Build Debian .deb package
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "# Create service user if it doesn't exist" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "if ! id -u libvirt-volume-provisioner > /dev/null 2>&1; then" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
-	@echo "    useradd --system --shell /bin/false libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "    useradd --system --shell /bin/false --groups libvirt-qemu,disk libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "else" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "    usermod -a -G libvirt-qemu,disk,libvirt,kvm libvirt-volume-provisioner 2>/dev/null || true" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "fi" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "# Create runtime directories" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
@@ -184,6 +192,11 @@ deb: build-linux ## Build Debian .deb package
 	@echo "# Reload systemd and enable service" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "systemctl daemon-reload" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@echo "systemctl enable $(DEB_NAME)" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "# Reload AppArmor profile if apparmor is active" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "if command -v apparmor_parser >/dev/null 2>&1 && [ -d /etc/apparmor.d ]; then" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "    apparmor_parser -r /etc/apparmor.d/usr.sbin.libvirt-volume-provisioner 2>/dev/null || true" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
+	@echo "fi" >> $(DEB_BUILD_DIR)/DEBIAN/postinst
 	@chmod 755 $(DEB_BUILD_DIR)/DEBIAN/postinst
 
 	# Create prerm script
@@ -193,6 +206,14 @@ deb: build-linux ## Build Debian .deb package
 	@echo "# Stop and disable service" >> $(DEB_BUILD_DIR)/DEBIAN/prerm
 	@echo "systemctl stop $(DEB_NAME) || true" >> $(DEB_BUILD_DIR)/DEBIAN/prerm
 	@echo "systemctl disable $(DEB_NAME) || true" >> $(DEB_BUILD_DIR)/DEBIAN/prerm
+	@echo "" >> $(DEB_BUILD_DIR)/DEBIAN/prerm
+	@echo "# Remove AppArmor profile" >> $(DEB_BUILD_DIR)/DEBIAN/prerm
+	@echo "if [ -f /etc/apparmor.d/usr.sbin.libvirt-volume-provisioner ]; then" >> $(DEB_BUILD_DIR)/DEBIAN/prerm
+	@echo "    rm -f /etc/apparmor.d/usr.sbin.libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/DEBIAN/prerm
+	@echo "    if command -v apparmor_parser >/dev/null 2>&1; then" >> $(DEB_BUILD_DIR)/DEBIAN/prerm
+	@echo "        apparmor_parser -R /etc/apparmor.d/usr.sbin.libvirt-volume-provisioner 2>/dev/null || true" >> $(DEB_BUILD_DIR)/DEBIAN/prerm
+	@echo "    fi" >> $(DEB_BUILD_DIR)/DEBIAN/prerm
+	@echo "fi" >> $(DEB_BUILD_DIR)/DEBIAN/prerm
 	@chmod 755 $(DEB_BUILD_DIR)/DEBIAN/prerm
 
 	# Create copyright file

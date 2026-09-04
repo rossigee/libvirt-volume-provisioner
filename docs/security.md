@@ -135,7 +135,37 @@ sudo chmod 640 /etc/default/libvirt-volume-provisioner
 sudo chmod 600 /etc/libvirt-volume-provisioner/tokens
 ```
 
-**Note**: `NoNewPrivileges=true` is currently disabled due to sudo wrapper usage. Planned removal in v0.9.x for direct exec.
+### AppArmor Confinement
+
+The Debian package ships an AppArmor profile at `apparmor/usr.sbin.libvirt-volume-provisioner`
+installed to `/etc/apparmor.d/usr.sbin.libvirt-volume-provisioner`:
+
+```bash
+# Profile is auto-loaded on install
+sudo aa-status | grep libvirt-volume-provisioner
+# libvirt-volume-provisioner (enforce)
+
+# Check for denials (should be empty after successful provisioning)
+sudo dmesg | grep -i "apparmor.*DENIED.*libvirt-volume-provisioner"
+sudo journalctl -k | grep apparmor
+
+# Local site overrides (e.g., alternate VG or pool path)
+sudo cat /etc/apparmor.d/local/usr.sbin.libvirt-volume-provisioner
+# Add per-site additions if needed:
+# /dev/data/* rw,
+# /var/lib/libvirt/cloud-init/* r,
+sudo apparmor_parser -r /etc/apparmor.d/usr.sbin.libvirt-volume-provisioner
+```
+
+Profile allows: `/usr/bin/libvirt-volume-provisioner` (`mr`), `qemu-img`/`lvs`/`vgs`/`lvcreate`/`lvremove`/`blkid`/`dd` (`ixr`), LVM (`/etc/lvm/lvm.conf r`, `/run/lvm/** rw`, `/run/lock/lvm/** rwk`), block devices (`/dev/mapper/** rw`, `/dev/dm-* rw`, `/dev/data/* rw`), libvirt socket (`/run/libvirt/libvirt-sock rw`), config/tokens/certs (`/etc/libvirt-volume-provisioner/** r`, `/etc/ssl/certs/** r`), DB and logs (`/var/lib/libvirt-volume-provisioner/** rwk`, `/var/log/libvirt-volume-provisioner/** rw`). Direct `exec.Command` is used since v0.9 (no `sudo` wrapper); keep `NoNewPrivileges=true`.
+
+To run in complain mode during rollout (log without enforcing):
+
+```bash
+sudo aa-complain /usr/bin/libvirt-volume-provisioner
+# ... test provisioning ...
+sudo aa-enforce /usr/bin/libvirt-volume-provisioner
+```
 
 ### Systemd Security
 
@@ -149,7 +179,7 @@ After=network.target libvirtd.service
 [Service]
 Type=simple
 User=libvirt-volume-provisioner
-Group=libvirt-volume-provisioner
+Group=libvirt-qemu
 
 # Security hardening
 NoNewPrivileges=true
@@ -168,6 +198,8 @@ CPUAccounting=true
 [Install]
 WantedBy=multi-user.target
 ```
+
+Note: `Group=libvirt-qemu` (not `libvirt-volume-provisioner`) gives the provisioner the same `disk`/`kvm` supplementary groups as `libvirtd` for `/dev/dm-*` access. Ensure the user is in `disk` via `usermod -a -G disk libvirt-volume-provisioner`.
 
 ## Audit & Logging
 

@@ -1,0 +1,9 @@
+# Local additions for libvirt-volume-provisioner AppArmor profile.
+# Site-specific overrides for platform-config hypervisors (Spring Bank / Golder).
+# Delivered via platform-config cloud-init write_files append, or left empty
+# for generic upstream installs.
+
+# Example: allow alternate VG or pool path
+# /dev/data/* rw,
+# /dev/mapper/data-* rw,
+# /var/lib/libvirt/cloud-init/* r,
