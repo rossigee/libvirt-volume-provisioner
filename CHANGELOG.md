@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-09-17
+
+### Fixed
+- **AppArmor profile blocks LVM tools**: The shipped profile did not allow the provisioner's child
+  `vgs`/`lvs` processes to enumerate `/dev/`, causing `volume group "data" does not exist or is not
+  accessible` and an immediate crash-loop on start. The profile now permits `/dev/` enumeration and
+  the block device/sysfs paths LVM needs (`/dev/ r`, `/dev/** r`, `/dev/loop*`, `/dev/sd*`,
+  `/dev/nvme*`, `/sys/dev/block/`) plus LVM config reads (`/etc/lvm/lvmlocal.conf`, `backup/`,
+  `archive/`) and `capability sys_nice`. This profile was observed working on the Spring Bank
+  hypervisors before being hand-reconciled back into git.
+
 ## [0.12.0] - 2026-08-19
 
 ### Added
