@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **CRITICAL: Memory leak in job cleanup**: Job history was kept unbounded in memory, causing provisioner to
+  exhaust 8GB MemoryMax limit and be killed by kernel OOM killer every 60-90 minutes in production. Root cause:
+  `CleanupCompletedJobs()` only deleted jobs when count *exceeded* 100, not when count *reached* 100, allowing
+  completed jobs to accumulate indefinitely. Fixed by (1) reducing retained job history from 100 to 20, (2)
+  increasing cleanup frequency from every 5 minutes to every 1 minute. Prevents unbounded memory growth and
+  allows provisioner to run continuously without OOM kills on typical provisioning loads (1-5 jobs/min).
+
 ## [0.12.1] - 2026-09-17
 
 ### Fixed

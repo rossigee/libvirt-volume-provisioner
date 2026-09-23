@@ -88,6 +88,11 @@ func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB in
 			span.SetStatus(codes.Error, err.Error())
 			return fmt.Errorf("existing volume %s is incompatible: %w", volumeName, err)
 		}
+		// Set permissions so libvirt/qemu can access the block device
+		devicePath := fmt.Sprintf("/dev/%s/%s", m.vgName, volumeName)
+		if err := m.setVolumePermissions(devicePath, volumeName); err != nil {
+			return err
+		}
 		logrus.WithFields(logrus.Fields{
 			"volume_name": volumeName,
 			"size_gb":     sizeGB,
@@ -110,15 +115,67 @@ func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB in
 
 // createVolumeOnce performs a single LVM volume creation attempt
 func (m *Manager) createVolumeOnce(ctx context.Context, volumeName string, sizeGB int) error {
-	// Create LVM volume
-	cmd := exec.CommandContext(ctx, "lvcreate",
-		"-L", fmt.Sprintf("%dg", sizeGB),
-		"-n", volumeName, m.vgName)
+	// Get the number of physical extents to allocate for fully-allocated volume
+	cmd := exec.CommandContext(ctx, "vgs", "--noheadings", "-o", "pv_count,extent_count", m.vgName)
 	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to get volume group info: %w, output: %s", err, string(output))
+	}
+
+	var pvCount, extentCount int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(output)), "%d %d", &pvCount, &extentCount); err != nil {
+		return fmt.Errorf("failed to parse vgs output: %w", err)
+	}
+
+	// Calculate extents based on requested sizeGB
+	// Each extent is 4MB by default on this system
+	extentsPerGB := 256 // 4MB * 256 = 1GB
+	extents := sizeGB * extentsPerGB
+
+	// Verify we have enough extents available
+	cmd = exec.CommandContext(ctx, "vgs", "--noheadings", "-o", "free_count", m.vgName)
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to get free extents: %w, output: %s", err, string(output))
+	}
+	var freeExtents int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(output)), "%d", &freeExtents); err != nil {
+		return fmt.Errorf("failed to parse free extent count: %w", err)
+	}
+	if extents > freeExtents {
+		return fmt.Errorf("not enough free extents: need %d, have %d", extents, freeExtents)
+	}
+
+	// Create fully-allocated LVM volume using extents
+	cmd = exec.CommandContext(ctx, "lvcreate",
+		"-l", fmt.Sprintf("%d", extents),
+		"--type", "linear",
+		"-n", volumeName, m.vgName)
+	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create LVM volume: %w, output: %s", err, string(output))
 	}
 
+	// Set permissions so libvirt/qemu can access the block device
+	devicePath := fmt.Sprintf("/dev/%s/%s", m.vgName, volumeName)
+	if err := m.setVolumePermissions(devicePath, volumeName); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (m *Manager) setVolumePermissions(devicePath, volumeName string) error {
+	if err := os.Chown(devicePath, 0, 6); err != nil {
+		return fmt.Errorf("failed to set group on volume %s: %w", volumeName, err)
+	}
+	if err := os.Chmod(devicePath, 0660); err != nil {
+		return fmt.Errorf("failed to set permissions on volume %s: %w", volumeName, err)
+	}
+	logrus.WithFields(logrus.Fields{
+		"volume_name": volumeName,
+		"device_path": devicePath,
+	}).Info("Set permissions on LVM volume")
 	return nil
 }
 
