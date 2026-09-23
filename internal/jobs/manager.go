@@ -180,7 +180,7 @@ func (m *Manager) runEvictionLoop(ctx context.Context, maxAge, interval time.Dur
 }
 
 func (m *Manager) runCleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
@@ -989,10 +989,13 @@ func (m *Manager) runCacheJob(ctx context.Context, job *Job) {
 	job.mu.Unlock()
 }
 
-// CleanupCompletedJobs removes old completed jobs, keeping the 100 most recent.
+// CleanupCompletedJobs removes old completed jobs, keeping only the 20 most recent.
+// This prevents unbounded memory growth from completed jobs accumulating in the map.
 func (m *Manager) CleanupCompletedJobs() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	const maxKeptJobs = 20
 
 	type entry struct {
 		id        string
@@ -1009,12 +1012,13 @@ func (m *Manager) CleanupCompletedJobs() {
 		}
 	}
 
-	if len(completed) > 100 {
+	if len(completed) > maxKeptJobs {
 		// Sort oldest-first so we delete the oldest entries
 		sort.Slice(completed, func(i, j int) bool {
 			return completed[i].createdAt.Before(completed[j].createdAt)
 		})
-		for i := 0; i < len(completed)-100; i++ {
+		// Delete all but the most recent maxKeptJobs
+		for i := 0; i < len(completed)-maxKeptJobs; i++ {
 			delete(m.jobs, completed[i].id)
 		}
 	}
