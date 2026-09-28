@@ -19,6 +19,7 @@ profile libvirt-volume-provisioner /usr/bin/libvirt-volume-provisioner flags=(at
   capability setuid,
   capability sys_admin,
   capability sys_rawio,
+  capability sys_nice,
 
   network inet stream,
   network inet dgram,
@@ -33,26 +34,32 @@ profile libvirt-volume-provisioner /usr/bin/libvirt-volume-provisioner flags=(at
 
   # Go runtime - proc self and system info (for Go runtime, uuid, cgroup detection)
   /proc/sys/kernel/random/uuid r,
+  /proc/sys/vm/max_map_count r,
   /proc/self/** r,
   /proc/*/cgroup r,
   /proc/*/mountinfo r,
   /proc/*/cmdline r,
   /proc/*/fd/ r,
   /proc/*/fd/** r,
+  /proc/*/mounts r,
   /proc/cmdline r,
   /proc/mounts r,
+  /proc/devices r,
   /etc/machine-id r,
   /sys/devices/system/node/ r,
   /sys/devices/system/node/** r,
   /sys/devices/virtual/dmi/** r,
   /sys/fs/cgroup/** r,
   /sys/fs/cgroup/system.slice/libvirt-volume-provisioner.service/** r,
+  /sys/devices/** r,
+  /sys/dev/block/ r,
   owner /proc/sys/net/core/somaxconn r,
 
   # Config, tokens, certs - site paths may be overridden in config.yaml,
   # allow minimal set; local override can extend.
   /etc/libvirt-volume-provisioner/** r,
   /etc/libvirt-volume-provisioner/config.yaml r,
+  /etc/libvirt/libvirt.conf r,
   /etc/default/libvirt-volume-provisioner r,
   /etc/ssl/certs/** r,
   /etc/pki/** r,
@@ -61,6 +68,7 @@ profile libvirt-volume-provisioner /usr/bin/libvirt-volume-provisioner flags=(at
   /etc/resolv.conf r,
 
   # Database - sqlite jobs + stage rates
+  /var/lib/libvirt-volume-provisioner/ r,
   /var/lib/libvirt-volume-provisioner/** rwk,
   /var/lib/libvirt-volume-provisioner/jobs.db rw,
   /var/lib/libvirt-volume-provisioner/jobs.db-journal rw,
@@ -82,13 +90,29 @@ profile libvirt-volume-provisioner /usr/bin/libvirt-volume-provisioner flags=(at
 
   # LVM - provisioner directly execs lvm tools (no sudo since v0.9)
   /etc/lvm/lvm.conf r,
-  /run/lvm/** rw,
+  /etc/lvm/lvmlocal.conf r,
+  /etc/lvm/backup/ r,
+  /etc/lvm/backup/* rw,
+  /etc/lvm/backup/** rwk,
+  /etc/lvm/archive/ r,
+  /etc/lvm/archive/** rwkl,
+  /etc/multipath.conf r,
+  /run/lvm/** rwk,
   /run/lock/lvm/** rwk,
-  /dev/mapper/control rw,
+
+  # Device nodes - vgs/lvs must enumerate /dev to locate the VG
   /dev/mapper/** rw,
-  /dev/dm-[0-9]* rw,
-  /dev/data/* rw,
+  /dev/mapper/control rw,
+  /dev/dm-[0-9]* rwk,
+  /dev/data/** rwk,
+  /dev/data/* rwk,
   /dev/vg*/** rw,
+  /dev/** r,
+  /dev/ r,
+  /dev/loop* r,
+  /dev/sd* r,
+  /dev/nvme* rw,
+  /dev/vfio/ r,
 
   /sbin/lvm ixr,
   /sbin/lvs ixr,
