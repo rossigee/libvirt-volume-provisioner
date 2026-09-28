@@ -37,6 +37,12 @@ import (
 // regardless of the host's configured locale, and is how these tools are
 // intended to be scripted.
 func lvmCmd(ctx context.Context, name string, args ...string) *exec.Cmd {
+	// #nosec G204 -- `name` is never caller-supplied. Every call site in this
+	// package passes a string literal for the tool ("vgs", "lvs", "lvcreate",
+	// "lvremove"); only the arguments are dynamic, and they are passed as
+	// separate argv entries rather than through a shell, so they cannot be
+	// re-parsed as syntax. Centralising exec here is what forces LC_ALL=C onto
+	// every LVM child process, which is the point of this helper.
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 	return cmd
@@ -220,6 +226,11 @@ func (m *Manager) setVolumePermissions(devicePath, volumeName string) error {
 	if err := os.Chown(devicePath, 0, 6); err != nil {
 		return fmt.Errorf("failed to set group on volume %s: %w", volumeName, err)
 	}
+	// devicePath is an LVM block device, not a file containing secrets, and the
+	// Chown above puts it in root:disk (gid 6) so the libvirt/qemu process can
+	// open it. Restricting it to 0600 as G302 suggests would leave the volume
+	// unreadable to the VM that was just provisioned.
+	// #nosec G302
 	if err := os.Chmod(devicePath, 0660); err != nil {
 		return fmt.Errorf("failed to set permissions on volume %s: %w", volumeName, err)
 	}
