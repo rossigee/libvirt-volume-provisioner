@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	appmetrics "github.com/rossigee/libvirt-volume-provisioner/internal/metrics"
-	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
-	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
+	appmetrics "github.com/rossigee/libvirt-volume-provisioner/internal/metrics"
+	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

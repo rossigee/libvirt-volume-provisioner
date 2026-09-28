@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	appmetrics "github.com/rossigee/libvirt-volume-provisioner/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/libvirt"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/lvm"
+	appmetrics "github.com/rossigee/libvirt-volume-provisioner/internal/metrics"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/minio"
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 	"github.com/stretchr/testify/assert"
 )
@@ -821,14 +821,13 @@ func TestListCachedImages_NoLibvirt(t *testing.T) {
 	assert.Nil(t, images)
 }
 
-
 // TestStop tests that Stop does not panic and signals the eviction goroutine
 func TestStop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
-		jobs:        make(map[string]*Job),
-		semaphore:   make(chan struct{}, 2),
-		bgCancel: cancel,
+		jobs:      make(map[string]*Job),
+		semaphore: make(chan struct{}, 2),
+		bgCancel:  cancel,
 	}
 
 	// Should not panic

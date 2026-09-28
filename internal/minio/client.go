@@ -50,9 +50,9 @@ func NewClient(cfg config.MinIOConfig) (*Client, error) {
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"endpoint":         cfg.Endpoint,
-		"access_key_set":   cfg.AccessKey != "",
-		"secret_key_set":   cfg.SecretKey != "",
+		"endpoint":       cfg.Endpoint,
+		"access_key_set": cfg.AccessKey != "",
+		"secret_key_set": cfg.SecretKey != "",
 	}).Debug("Initialising MinIO client")
 
 	u, err := url.Parse(cfg.Endpoint)
@@ -104,7 +104,7 @@ func NewClient(cfg config.MinIOConfig) (*Client, error) {
 	_, err = minioClient.ListBuckets(context.Background())
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"error": err.Error(),
+			"error":  err.Error(),
 			"region": cfg.Region,
 		}).Warn("Failed to list buckets - MinIO connection test failed")
 	} else {
@@ -358,4 +358,3 @@ func (c *Client) GetObjectContent(ctx context.Context, bucketName, objectName st
 
 	return content, nil
 }
-

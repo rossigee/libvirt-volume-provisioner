@@ -281,12 +281,12 @@ func (m *Manager) validateDeviceBeforeConversion(ctx context.Context, devicePath
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"volume_name":  volumeName,
-		"device_path":  devicePath,
-		"lv_path":      fullPath,
-		"lv_size":      info.SizeBytes,
-		"lv_attr":      info.Attributes,
-		"device_size":  string(bytes.TrimSpace(output)),
+		"volume_name": volumeName,
+		"device_path": devicePath,
+		"lv_path":     fullPath,
+		"lv_size":     info.SizeBytes,
+		"lv_attr":     info.Attributes,
+		"device_size": string(bytes.TrimSpace(output)),
 	}).Info("Device validation passed, proceeding with conversion")
 
 	return nil
