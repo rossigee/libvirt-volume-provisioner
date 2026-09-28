@@ -86,10 +86,10 @@ func TestNewClient(t *testing.T) {
 func testClient(t *testing.T) *Client {
 	t.Helper()
 	client, err := NewClient(config.MinIOConfig{
-		Endpoint:      "https://minio.example.com:9000",
-		AccessKey:     "test-access-key",
-		SecretKey:     "test-secret-key",
-		RetryAttempts: 3,
+		Endpoint:       "https://minio.example.com:9000",
+		AccessKey:      "test-access-key",
+		SecretKey:      "test-secret-key",
+		RetryAttempts:  3,
 		RetryBackoffMS: []int{100, 1000, 10000},
 	})
 	require.NoError(t, err)

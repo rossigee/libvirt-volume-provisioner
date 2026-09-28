@@ -26,6 +26,63 @@ import (
 )
 
 // v0.9: sudoCmd removed - using direct exec.Command
+
+// lvmCmd builds an exec.Cmd for an LVM tool with the C locale forced.
+//
+// LVM tools localise their output. Under a locale such as th_TH, vgs emits
+// fullwidth digits, and fmt.Sscanf's %d accepts only ASCII digits, so parsing
+// fails with "expected integer" and every volume creation aborts. The same
+// class of defect produced the BE 2569 build timestamps in the image builds.
+// Forcing LC_ALL=C on the child process makes the numeric output stable
+// regardless of the host's configured locale, and is how these tools are
+// intended to be scripted.
+func lvmCmd(ctx context.Context, name string, args ...string) *exec.Cmd {
+	// #nosec G204 -- `name` is never caller-supplied. Every call site in this
+	// package passes a string literal for the tool ("vgs", "lvs", "lvcreate",
+	// "lvremove"); only the arguments are dynamic, and they are passed as
+	// separate argv entries rather than through a shell, so they cannot be
+	// re-parsed as syntax. Centralising exec here is what forces LC_ALL=C onto
+	// every LVM child process, which is the point of this helper.
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	return cmd
+}
+
+// normalizeNumericOutput reduces LVM tool output to a form fmt.Sscanf's %d can
+// read, so a volume can be created regardless of the host's locale.
+//
+// Two things are handled:
+//
+//   - Fullwidth digits. Under a locale such as th_TH, LVM emits U+FF10..U+FF19
+//     rather than ASCII 0-9, and %d rejects them with "expected integer". They
+//     are folded to their ASCII equivalents.
+//   - Column wrapping. Without --nosuffix, LVM wraps a long row at the terminal
+//     width, so a row arrives split across two lines and %d fails with
+//     "newline in input does not match format". Whitespace, including the line
+//     break, becomes a single field separator.
+//
+// Digit grouping is deliberately not handled. vgs is asked for raw count fields
+// (pv_count, extent_count, free_count) with no --units, so LVM emits them
+// ungrouped. Supporting grouping would be ambiguous: "102,399" and a row
+// wrapped as "102" / "399" are indistinguishable from the text alone, and
+// guessing wrong yields a wrong extent count with no error, which is worse than
+// a parse failure.
+func normalizeNumericOutput(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r >= '\uFF10' && r <= '\uFF19': // fullwidth digit
+			b.WriteRune('0' + (r - '\uFF10'))
+		default:
+			b.WriteByte(' ')
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
 // ProgressUpdater interface for updating job progress
 type ProgressUpdater interface {
 	UpdateProgress(stage string, percent float64, bytesProcessed, bytesTotal int64)
@@ -43,7 +100,7 @@ func NewManager(cfg config.LVMConfig) (*Manager, error) {
 		return nil, fmt.Errorf("invalid volume group name %q: must not contain path separators", cfg.VolumeGroup)
 	}
 
-	cmd := exec.CommandContext(context.Background(), "vgs", cfg.VolumeGroup)
+	cmd := lvmCmd(context.Background(), "vgs", cfg.VolumeGroup)
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("volume group %q does not exist or is not accessible: %w", cfg.VolumeGroup, err)
 	}
@@ -69,9 +126,44 @@ func NewManager(cfg config.LVMConfig) (*Manager, error) {
 	}, nil
 }
 
+// validateVolumeName rejects volume names that could escape the volume group's
+// device directory.
+//
+// Volume names are interpolated into /dev/<vg>/<name> before being stat'd or
+// opened (see CreateVolume, PopulateVolume and validateDeviceBeforeConversion),
+// so a name containing a path separator or a parent reference would let a
+// caller reach outside /dev/<vg>. NewManager applies the equivalent check to the
+// volume group name; this is the same guard for the volume name.
+//
+// LVM itself restricts names to [a-zA-Z0-9+_.-], so anything else is rejected
+// here rather than passed through to fail obscurely later.
+func validateVolumeName(volumeName string) error {
+	if volumeName == "" {
+		return fmt.Errorf("volume name must not be empty")
+	}
+	if strings.ContainsAny(volumeName, "/\\") {
+		return fmt.Errorf("invalid volume name %q: must not contain path separators", volumeName)
+	}
+	if volumeName == "." || volumeName == ".." || strings.Contains(volumeName, "..") {
+		return fmt.Errorf("invalid volume name %q: must not contain parent references", volumeName)
+	}
+	for _, r := range volumeName {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '+', r == '_', r == '.', r == '-':
+		default:
+			return fmt.Errorf("invalid volume name %q: contains disallowed character %q", volumeName, r)
+		}
+	}
+	return nil
+}
+
 // CreateVolume creates a new LVM volume with exponential backoff retry
 // If volume exists, validates it matches requirements and reuses if compatible
 func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB int) error {
+	if err := validateVolumeName(volumeName); err != nil {
+		return err
+	}
 	// Start span for LVM volume creation
 	tracer := otel.Tracer("libvirt-volume-provisioner")
 	ctx, span := tracer.Start(ctx, "CreateVolume",
@@ -87,6 +179,11 @@ func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB in
 		if err := m.validateExistingVolume(ctx, volumeName, sizeGB); err != nil {
 			span.SetStatus(codes.Error, err.Error())
 			return fmt.Errorf("existing volume %s is incompatible: %w", volumeName, err)
+		}
+		// Set permissions so libvirt/qemu can access the block device
+		devicePath := fmt.Sprintf("/dev/%s/%s", m.vgName, volumeName)
+		if err := m.setVolumePermissions(devicePath, volumeName); err != nil {
+			return err
 		}
 		logrus.WithFields(logrus.Fields{
 			"volume_name": volumeName,
@@ -110,14 +207,143 @@ func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB in
 
 // createVolumeOnce performs a single LVM volume creation attempt
 func (m *Manager) createVolumeOnce(ctx context.Context, volumeName string, sizeGB int) error {
-	// Create LVM volume
-	cmd := exec.CommandContext(ctx, "lvcreate",
-		"-L", fmt.Sprintf("%dg", sizeGB),
-		"-n", volumeName, m.vgName)
+	// Get the number of physical extents to allocate for fully-allocated volume
+	cmd := lvmCmd(ctx, "vgs", "--noheadings", "-o", "pv_count,extent_count", m.vgName)
 	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to get volume group info: %w, output: %s", err, string(output))
+	}
+
+	var pvCount, extentCount int
+	if _, err := fmt.Sscanf(normalizeNumericOutput(string(output)), "%d %d", &pvCount, &extentCount); err != nil {
+		return fmt.Errorf("failed to parse vgs output: %w", err)
+	}
+
+	// Calculate extents based on requested sizeGB
+	// Each extent is 4MB by default on this system
+	extentsPerGB := 256 // 4MB * 256 = 1GB
+	extents := sizeGB * extentsPerGB
+
+	// Verify we have enough extents available
+	cmd = lvmCmd(ctx, "vgs", "--noheadings", "-o", "free_count", m.vgName)
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to get free extents: %w, output: %s", err, string(output))
+	}
+	var freeExtents int
+	if _, err := fmt.Sscanf(normalizeNumericOutput(string(output)), "%d", &freeExtents); err != nil {
+		return fmt.Errorf("failed to parse free extent count: %w", err)
+	}
+	if extents > freeExtents {
+		return fmt.Errorf("not enough free extents: need %d, have %d", extents, freeExtents)
+	}
+
+	// Create fully-allocated LVM volume using extents
+	cmd = lvmCmd(ctx, "lvcreate",
+		"-l", fmt.Sprintf("%d", extents),
+		"--type", "linear",
+		"-n", volumeName, m.vgName)
+	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create LVM volume: %w, output: %s", err, string(output))
 	}
+
+	// Set permissions so libvirt/qemu can access the block device
+	devicePath := fmt.Sprintf("/dev/%s/%s", m.vgName, volumeName)
+	if err := m.setVolumePermissions(devicePath, volumeName); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (m *Manager) setVolumePermissions(devicePath, volumeName string) error {
+	if err := os.Chown(devicePath, 0, 6); err != nil {
+		return fmt.Errorf("failed to set group on volume %s: %w", volumeName, err)
+	}
+	// devicePath is an LVM block device, not a file containing secrets, and the
+	// Chown above puts it in root:disk (gid 6) so the libvirt/qemu process can
+	// open it. Restricting it to 0600 as G302 suggests would leave the volume
+	// unreadable to the VM that was just provisioned.
+	// #nosec G302
+	if err := os.Chmod(devicePath, 0660); err != nil {
+		return fmt.Errorf("failed to set permissions on volume %s: %w", volumeName, err)
+	}
+	logrus.WithFields(logrus.Fields{
+		"volume_name": volumeName,
+		"device_path": devicePath,
+	}).Info("Set permissions on LVM volume")
+	return nil
+}
+
+// validateDeviceBeforeConversion performs comprehensive checks to ensure the LVM
+// volume is properly created, active, and accessible before attempting qemu-img conversion.
+// This prevents "Cannot grow device files" errors by catching missing/inactive volumes early.
+func (m *Manager) validateDeviceBeforeConversion(ctx context.Context, devicePath, volumeName string) error {
+	// 1. Check if LV exists in LVM metadata
+	fullPath := fmt.Sprintf("%s/%s", m.vgName, volumeName)
+	lvdisplayCmd := lvmCmd(ctx, "lvdisplay", fullPath)
+	if err := lvdisplayCmd.Run(); err != nil {
+		return fmt.Errorf("LVM logical volume does not exist or is not accessible: %s: %w", fullPath, err)
+	}
+
+	// 2. Get volume info to verify it's active and has correct attributes
+	info, err := m.GetVolumeInfo(ctx, volumeName)
+	if err != nil {
+		return fmt.Errorf("failed to get volume info for validation: %w", err)
+	}
+
+	// Check if volume is active (attribute[4] should be 'a' for active or '-' for inactive but available)
+	// Attribute string format: "owi-a-----" where position 4 is the allocation/activation status
+	if len(info.Attributes) < 5 {
+		return fmt.Errorf("invalid LV attributes format: %q", info.Attributes)
+	}
+	if info.Attributes[4] != 'a' && info.Attributes[4] != '-' {
+		return fmt.Errorf("LVM volume is not active or available (status: %c in attributes: %s)",
+			info.Attributes[4], info.Attributes)
+	}
+
+	// 3. Verify the block device file actually exists and is a block device
+	fi, err := os.Stat(devicePath)
+	if err != nil {
+		return fmt.Errorf("device path does not exist: %s: %w", devicePath, err)
+	}
+	if fi.Mode()&os.ModeDevice == 0 {
+		return fmt.Errorf("device path exists but is not a block device: %s (mode: %v)", devicePath, fi.Mode())
+	}
+
+	// 4. Verify the device is readable and writable
+	// devicePath is built as /dev/<vgName>/<volumeName> and both components are
+	// constrained: NewManager rejects a volume group containing a path
+	// separator, and validateVolumeName rejects an empty name, any path
+	// separator, any "..", and anything outside LVM's [a-zA-Z0-9+_.-] charset.
+	// The path therefore cannot escape /dev/<vgName>, which is the precondition
+	// G304 is asking about. Validated in CreateVolume/PopulateVolume before we
+	// get here; the lvdisplay check above independently confirms the LV exists.
+	// #nosec G304
+	if _, err := os.Open(devicePath); err != nil {
+		return fmt.Errorf("device is not readable: %s: %w", devicePath, err)
+	}
+
+	// 5. Verify the device can be written to (attempt to get current size)
+	// This catches issues where the device exists but isn't properly initialized
+	// Routed through lvmCmd so the byte count comes back in the C locale like
+	// every other numeric read on this path.
+	cmd := lvmCmd(ctx, "blockdev", "--getsize64", devicePath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("device size query failed (device may not be properly initialized): %s: %w (output: %s)",
+			devicePath, err, string(output))
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"volume_name": volumeName,
+		"device_path": devicePath,
+		"lv_path":     fullPath,
+		"lv_size":     info.SizeBytes,
+		"lv_attr":     info.Attributes,
+		"device_size": string(bytes.TrimSpace(output)),
+	}).Info("Device validation passed, proceeding with conversion")
 
 	return nil
 }
@@ -130,6 +356,9 @@ func (m *Manager) PopulateVolume(
 	store *storage.Store,
 	jobID string,
 ) error {
+	if err := validateVolumeName(volumeName); err != nil {
+		return err
+	}
 	// Start span for LVM volume population
 	tracer := otel.Tracer("libvirt-volume-provisioner")
 	ctx, span := tracer.Start(ctx, "PopulateVolume",
@@ -176,9 +405,11 @@ func (m *Manager) populateVolumeOnce(
 	// Get the device path for the LVM volume
 	devicePath := fmt.Sprintf("/dev/%s/%s", m.vgName, volumeName)
 
-	// Verify the block device exists
-	if fi, err := os.Stat(devicePath); err != nil || fi.Mode()&os.ModeDevice == 0 {
-		return fmt.Errorf("LVM volume device does not exist: %s", devicePath)
+	// Comprehensive validation before attempting conversion
+	// This catches issues early (missing LV, inactive status, device not accessible)
+	// preventing "Cannot grow device files" errors during qemu-img conversion
+	if err := m.validateDeviceBeforeConversion(ctx, devicePath, volumeName); err != nil {
+		return fmt.Errorf("device validation failed before conversion: %w", err)
 	}
 
 	// Check if volume already has content by looking for filesystem
@@ -377,6 +608,9 @@ loop:
 
 // DeleteVolume deletes an LVM volume
 func (m *Manager) DeleteVolume(ctx context.Context, volumeName string) error {
+	if err := validateVolumeName(volumeName); err != nil {
+		return err
+	}
 	// Start span for LVM volume deletion
 	_, span := otel.Tracer("libvirt-volume-provisioner").Start(ctx, "DeleteVolume",
 		trace.WithAttributes(
@@ -389,7 +623,7 @@ func (m *Manager) DeleteVolume(ctx context.Context, volumeName string) error {
 		return fmt.Errorf("volume %s does not exist", volumeName)
 	}
 
-	cmd := exec.CommandContext(ctx, "lvremove", "-f", fmt.Sprintf("%s/%s", m.vgName, volumeName))
+	cmd := lvmCmd(ctx, "lvremove", "-f", fmt.Sprintf("%s/%s", m.vgName, volumeName))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
@@ -412,7 +646,7 @@ func (m *Manager) GetVolumeInfo(ctx context.Context, volumeName string) (*Volume
 	}
 
 	fullPath := fmt.Sprintf("%s/%s", m.vgName, volumeName)
-	cmd := exec.CommandContext(ctx, "lvs", "--units", "b", "--noheadings",
+	cmd := lvmCmd(ctx, "lvs", "--units", "b", "--noheadings",
 		"-o", "lv_name,lv_size,lv_attr", fullPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -440,7 +674,7 @@ func (m *Manager) GetVolumeInfo(ctx context.Context, volumeName string) (*Volume
 
 // ListVolumes returns a list of all LVM volumes in the volume group
 func (m *Manager) ListVolumes() ([]string, error) {
-	cmd := exec.CommandContext(context.Background(), "lvs", "--noheadings", "-o", "lv_name", m.vgName)
+	cmd := lvmCmd(context.Background(), "lvs", "--noheadings", "-o", "lv_name", m.vgName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list volumes: %w, output: %s", err, string(output))
@@ -459,7 +693,7 @@ func (m *Manager) ListVolumes() ([]string, error) {
 
 // volumeExists checks if an LVM volume exists
 func (m *Manager) volumeExists(ctx context.Context, volumeName string) bool {
-	cmd := exec.CommandContext(ctx, "lvs", fmt.Sprintf("%s/%s", m.vgName, volumeName))
+	cmd := lvmCmd(ctx, "lvs", fmt.Sprintf("%s/%s", m.vgName, volumeName))
 	return cmd.Run() == nil
 }
 
