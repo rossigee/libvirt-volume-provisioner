@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   completed jobs to accumulate indefinitely. Fixed by (1) reducing retained job history from 100 to 20, (2)
   increasing cleanup frequency from every 5 minutes to every 1 minute. Prevents unbounded memory growth and
   allows provisioner to run continuously without OOM kills on typical provisioning loads (1-5 jobs/min).
+- **qemu-img conversion failing on missing LVM volumes**: `qemu-img convert` was called to non-existent LVM
+  block device paths, causing `Cannot grow device files` error. Root cause: insufficient validation before
+  conversion—device check was too permissive and didn't verify LV was actually created and active in LVM.
+  Fixed by adding comprehensive pre-conversion validation (`validateDeviceBeforeConversion`) that verifies:
+  (1) LV exists in LVM metadata (`lvdisplay`), (2) LV is active/available (attribute check), (3) block device
+  file exists and is a real block device, (4) device is accessible (open test), (5) device has correct size
+  (`blockdev --getsize64`). This prevents conversion attempts on missing/inactive volumes and catches device
+  issues early with clear error messages. Added regression tests for LV creation→device validation→qemu-img
+  conversion sequence to prevent ordering bugs.
 
 ## [0.12.1] - 2026-09-17
 

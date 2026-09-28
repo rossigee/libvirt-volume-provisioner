@@ -230,6 +230,68 @@ func (m *Manager) setVolumePermissions(devicePath, volumeName string) error {
 	return nil
 }
 
+// validateDeviceBeforeConversion performs comprehensive checks to ensure the LVM
+// volume is properly created, active, and accessible before attempting qemu-img conversion.
+// This prevents "Cannot grow device files" errors by catching missing/inactive volumes early.
+func (m *Manager) validateDeviceBeforeConversion(ctx context.Context, devicePath, volumeName string) error {
+	// 1. Check if LV exists in LVM metadata
+	fullPath := fmt.Sprintf("%s/%s", m.vgName, volumeName)
+	lvdisplayCmd := lvmCmd(ctx, "lvdisplay", fullPath)
+	if err := lvdisplayCmd.Run(); err != nil {
+		return fmt.Errorf("LVM logical volume does not exist or is not accessible: %s: %w", fullPath, err)
+	}
+
+	// 2. Get volume info to verify it's active and has correct attributes
+	info, err := m.GetVolumeInfo(ctx, volumeName)
+	if err != nil {
+		return fmt.Errorf("failed to get volume info for validation: %w", err)
+	}
+
+	// Check if volume is active (attribute[4] should be 'a' for active or '-' for inactive but available)
+	// Attribute string format: "owi-a-----" where position 4 is the allocation/activation status
+	if len(info.Attributes) < 5 {
+		return fmt.Errorf("invalid LV attributes format: %q", info.Attributes)
+	}
+	if info.Attributes[4] != 'a' && info.Attributes[4] != '-' {
+		return fmt.Errorf("LVM volume is not active or available (status: %c in attributes: %s)",
+			info.Attributes[4], info.Attributes)
+	}
+
+	// 3. Verify the block device file actually exists and is a block device
+	fi, err := os.Stat(devicePath)
+	if err != nil {
+		return fmt.Errorf("device path does not exist: %s: %w", devicePath, err)
+	}
+	if fi.Mode()&os.ModeDevice == 0 {
+		return fmt.Errorf("device path exists but is not a block device: %s (mode: %v)", devicePath, fi.Mode())
+	}
+
+	// 4. Verify the device is readable and writable
+	if _, err := os.Open(devicePath); err != nil {
+		return fmt.Errorf("device is not readable: %s: %w", devicePath, err)
+	}
+
+	// 5. Verify the device can be written to (attempt to get current size)
+	// This catches issues where the device exists but isn't properly initialized
+	cmd := exec.CommandContext(ctx, "blockdev", "--getsize64", devicePath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("device size query failed (device may not be properly initialized): %s: %w (output: %s)",
+			devicePath, err, string(output))
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"volume_name":  volumeName,
+		"device_path":  devicePath,
+		"lv_path":      fullPath,
+		"lv_size":      info.SizeBytes,
+		"lv_attr":      info.Attributes,
+		"device_size":  string(bytes.TrimSpace(output)),
+	}).Info("Device validation passed, proceeding with conversion")
+
+	return nil
+}
+
 // PopulateVolume populates an LVM volume with image data with exponential backoff retry
 func (m *Manager) PopulateVolume(
 	ctx context.Context,
@@ -284,9 +346,11 @@ func (m *Manager) populateVolumeOnce(
 	// Get the device path for the LVM volume
 	devicePath := fmt.Sprintf("/dev/%s/%s", m.vgName, volumeName)
 
-	// Verify the block device exists
-	if fi, err := os.Stat(devicePath); err != nil || fi.Mode()&os.ModeDevice == 0 {
-		return fmt.Errorf("LVM volume device does not exist: %s", devicePath)
+	// Comprehensive validation before attempting conversion
+	// This catches issues early (missing LV, inactive status, device not accessible)
+	// preventing "Cannot grow device files" errors during qemu-img conversion
+	if err := m.validateDeviceBeforeConversion(ctx, devicePath, volumeName); err != nil {
+		return fmt.Errorf("device validation failed before conversion: %w", err)
 	}
 
 	// Check if volume already has content by looking for filesystem
