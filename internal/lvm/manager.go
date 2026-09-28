@@ -26,6 +26,57 @@ import (
 )
 
 // v0.9: sudoCmd removed - using direct exec.Command
+
+// lvmCmd builds an exec.Cmd for an LVM tool with the C locale forced.
+//
+// LVM tools localise their output. Under a locale such as th_TH, vgs emits
+// fullwidth digits, and fmt.Sscanf's %d accepts only ASCII digits, so parsing
+// fails with "expected integer" and every volume creation aborts. The same
+// class of defect produced the BE 2569 build timestamps in the image builds.
+// Forcing LC_ALL=C on the child process makes the numeric output stable
+// regardless of the host's configured locale, and is how these tools are
+// intended to be scripted.
+func lvmCmd(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	return cmd
+}
+
+// normalizeNumericOutput reduces LVM tool output to a form fmt.Sscanf's %d can
+// read, so a volume can be created regardless of the host's locale.
+//
+// Two things are handled:
+//
+//   - Fullwidth digits. Under a locale such as th_TH, LVM emits U+FF10..U+FF19
+//     rather than ASCII 0-9, and %d rejects them with "expected integer". They
+//     are folded to their ASCII equivalents.
+//   - Column wrapping. Without --nosuffix, LVM wraps a long row at the terminal
+//     width, so a row arrives split across two lines and %d fails with
+//     "newline in input does not match format". Whitespace, including the line
+//     break, becomes a single field separator.
+//
+// Digit grouping is deliberately not handled. vgs is asked for raw count fields
+// (pv_count, extent_count, free_count) with no --units, so LVM emits them
+// ungrouped. Supporting grouping would be ambiguous: "102,399" and a row
+// wrapped as "102" / "399" are indistinguishable from the text alone, and
+// guessing wrong yields a wrong extent count with no error, which is worse than
+// a parse failure.
+func normalizeNumericOutput(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r >= '\uFF10' && r <= '\uFF19': // fullwidth digit
+			b.WriteRune('0' + (r - '\uFF10'))
+		default:
+			b.WriteByte(' ')
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
 // ProgressUpdater interface for updating job progress
 type ProgressUpdater interface {
 	UpdateProgress(stage string, percent float64, bytesProcessed, bytesTotal int64)
@@ -43,7 +94,7 @@ func NewManager(cfg config.LVMConfig) (*Manager, error) {
 		return nil, fmt.Errorf("invalid volume group name %q: must not contain path separators", cfg.VolumeGroup)
 	}
 
-	cmd := exec.CommandContext(context.Background(), "vgs", cfg.VolumeGroup)
+	cmd := lvmCmd(context.Background(), "vgs", cfg.VolumeGroup)
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("volume group %q does not exist or is not accessible: %w", cfg.VolumeGroup, err)
 	}
@@ -116,14 +167,14 @@ func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB in
 // createVolumeOnce performs a single LVM volume creation attempt
 func (m *Manager) createVolumeOnce(ctx context.Context, volumeName string, sizeGB int) error {
 	// Get the number of physical extents to allocate for fully-allocated volume
-	cmd := exec.CommandContext(ctx, "vgs", "--noheadings", "-o", "pv_count,extent_count", m.vgName)
+	cmd := lvmCmd(ctx, "vgs", "--noheadings", "-o", "pv_count,extent_count", m.vgName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to get volume group info: %w, output: %s", err, string(output))
 	}
 
 	var pvCount, extentCount int
-	if _, err := fmt.Sscanf(strings.TrimSpace(string(output)), "%d %d", &pvCount, &extentCount); err != nil {
+	if _, err := fmt.Sscanf(normalizeNumericOutput(string(output)), "%d %d", &pvCount, &extentCount); err != nil {
 		return fmt.Errorf("failed to parse vgs output: %w", err)
 	}
 
@@ -133,13 +184,13 @@ func (m *Manager) createVolumeOnce(ctx context.Context, volumeName string, sizeG
 	extents := sizeGB * extentsPerGB
 
 	// Verify we have enough extents available
-	cmd = exec.CommandContext(ctx, "vgs", "--noheadings", "-o", "free_count", m.vgName)
+	cmd = lvmCmd(ctx, "vgs", "--noheadings", "-o", "free_count", m.vgName)
 	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to get free extents: %w, output: %s", err, string(output))
 	}
 	var freeExtents int
-	if _, err := fmt.Sscanf(strings.TrimSpace(string(output)), "%d", &freeExtents); err != nil {
+	if _, err := fmt.Sscanf(normalizeNumericOutput(string(output)), "%d", &freeExtents); err != nil {
 		return fmt.Errorf("failed to parse free extent count: %w", err)
 	}
 	if extents > freeExtents {
@@ -147,7 +198,7 @@ func (m *Manager) createVolumeOnce(ctx context.Context, volumeName string, sizeG
 	}
 
 	// Create fully-allocated LVM volume using extents
-	cmd = exec.CommandContext(ctx, "lvcreate",
+	cmd = lvmCmd(ctx, "lvcreate",
 		"-l", fmt.Sprintf("%d", extents),
 		"--type", "linear",
 		"-n", volumeName, m.vgName)
@@ -446,7 +497,7 @@ func (m *Manager) DeleteVolume(ctx context.Context, volumeName string) error {
 		return fmt.Errorf("volume %s does not exist", volumeName)
 	}
 
-	cmd := exec.CommandContext(ctx, "lvremove", "-f", fmt.Sprintf("%s/%s", m.vgName, volumeName))
+	cmd := lvmCmd(ctx, "lvremove", "-f", fmt.Sprintf("%s/%s", m.vgName, volumeName))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
@@ -469,7 +520,7 @@ func (m *Manager) GetVolumeInfo(ctx context.Context, volumeName string) (*Volume
 	}
 
 	fullPath := fmt.Sprintf("%s/%s", m.vgName, volumeName)
-	cmd := exec.CommandContext(ctx, "lvs", "--units", "b", "--noheadings",
+	cmd := lvmCmd(ctx, "lvs", "--units", "b", "--noheadings",
 		"-o", "lv_name,lv_size,lv_attr", fullPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -497,7 +548,7 @@ func (m *Manager) GetVolumeInfo(ctx context.Context, volumeName string) (*Volume
 
 // ListVolumes returns a list of all LVM volumes in the volume group
 func (m *Manager) ListVolumes() ([]string, error) {
-	cmd := exec.CommandContext(context.Background(), "lvs", "--noheadings", "-o", "lv_name", m.vgName)
+	cmd := lvmCmd(context.Background(), "lvs", "--noheadings", "-o", "lv_name", m.vgName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list volumes: %w, output: %s", err, string(output))
@@ -516,7 +567,7 @@ func (m *Manager) ListVolumes() ([]string, error) {
 
 // volumeExists checks if an LVM volume exists
 func (m *Manager) volumeExists(ctx context.Context, volumeName string) bool {
-	cmd := exec.CommandContext(ctx, "lvs", fmt.Sprintf("%s/%s", m.vgName, volumeName))
+	cmd := lvmCmd(ctx, "lvs", fmt.Sprintf("%s/%s", m.vgName, volumeName))
 	return cmd.Run() == nil
 }
 
