@@ -150,4 +150,3 @@ func (v *Validator) GetClientCAs() *x509.CertPool {
 func (v *Validator) IsClientCALoaded() bool {
 	return v.clientCALoaded
 }
-

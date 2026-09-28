@@ -765,7 +765,7 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 		if localChecksum != remoteChecksum {
 			_ = m.libvirtPool.DeleteImage(imagePath)
 			return "", fmt.Errorf("downloaded image checksum mismatch: got %s, expected %s "+
-					"(possible corruption or supply chain attack)", localChecksum, remoteChecksum)
+				"(possible corruption or supply chain attack)", localChecksum, remoteChecksum)
 		}
 		logrus.WithFields(logrus.Fields{
 			"job_id":          job.ID,

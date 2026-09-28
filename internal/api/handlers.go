@@ -41,12 +41,12 @@ type VolumeContentManager interface {
 
 // Handler handles HTTP API requests
 type Handler struct {
-	jobManager          JobManager
+	jobManager           JobManager
 	volumeContentManager VolumeContentManager
-	metrics             *metrics.Metrics
-	version             string
-	startTime           time.Time
-	maxConcurrent       int
+	metrics              *metrics.Metrics
+	version              string
+	startTime            time.Time
+	maxConcurrent        int
 }
 
 // NewHandler creates a new API handler
@@ -58,12 +58,12 @@ func NewHandler(
 	maxConcurrent int,
 ) *Handler {
 	return &Handler{
-		jobManager:          jobManager,
+		jobManager:           jobManager,
 		volumeContentManager: volumeContentManager,
-		metrics:             metrics,
-		version:             version,
-		startTime:           time.Now(),
-		maxConcurrent:       maxConcurrent,
+		metrics:              metrics,
+		version:              version,
+		startTime:            time.Now(),
+		maxConcurrent:        maxConcurrent,
 	}
 }
 
@@ -330,8 +330,8 @@ func (h *Handler) DeleteCachedImage(c *gin.Context) {
 	key := c.Param("key")
 	if len(key) != 64 || !isHexString(key) {
 		c.JSON(http.StatusBadRequest, types.ErrorResponse{
-			Error:   "invalid key: must be 64 lowercase hex characters",
-			Code:    400,
+			Error: "invalid key: must be 64 lowercase hex characters",
+			Code:  400,
 		})
 		return
 	}
@@ -395,10 +395,10 @@ func (h *Handler) UploadVolumeContent(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"status":     "uploaded",
-		"pool":       poolName,
-		"volume":     volumeName,
-		"bytes":      contentSize,
+		"status": "uploaded",
+		"pool":   poolName,
+		"volume": volumeName,
+		"bytes":  contentSize,
 	})
 }
 
