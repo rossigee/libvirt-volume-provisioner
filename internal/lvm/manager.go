@@ -126,9 +126,44 @@ func NewManager(cfg config.LVMConfig) (*Manager, error) {
 	}, nil
 }
 
+// validateVolumeName rejects volume names that could escape the volume group's
+// device directory.
+//
+// Volume names are interpolated into /dev/<vg>/<name> before being stat'd or
+// opened (see CreateVolume, PopulateVolume and validateDeviceBeforeConversion),
+// so a name containing a path separator or a parent reference would let a
+// caller reach outside /dev/<vg>. NewManager applies the equivalent check to the
+// volume group name; this is the same guard for the volume name.
+//
+// LVM itself restricts names to [a-zA-Z0-9+_.-], so anything else is rejected
+// here rather than passed through to fail obscurely later.
+func validateVolumeName(volumeName string) error {
+	if volumeName == "" {
+		return fmt.Errorf("volume name must not be empty")
+	}
+	if strings.ContainsAny(volumeName, "/\\") {
+		return fmt.Errorf("invalid volume name %q: must not contain path separators", volumeName)
+	}
+	if volumeName == "." || volumeName == ".." || strings.Contains(volumeName, "..") {
+		return fmt.Errorf("invalid volume name %q: must not contain parent references", volumeName)
+	}
+	for _, r := range volumeName {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '+', r == '_', r == '.', r == '-':
+		default:
+			return fmt.Errorf("invalid volume name %q: contains disallowed character %q", volumeName, r)
+		}
+	}
+	return nil
+}
+
 // CreateVolume creates a new LVM volume with exponential backoff retry
 // If volume exists, validates it matches requirements and reuses if compatible
 func (m *Manager) CreateVolume(ctx context.Context, volumeName string, sizeGB int) error {
+	if err := validateVolumeName(volumeName); err != nil {
+		return err
+	}
 	// Start span for LVM volume creation
 	tracer := otel.Tracer("libvirt-volume-provisioner")
 	ctx, span := tracer.Start(ctx, "CreateVolume",
@@ -278,13 +313,23 @@ func (m *Manager) validateDeviceBeforeConversion(ctx context.Context, devicePath
 	}
 
 	// 4. Verify the device is readable and writable
+	// devicePath is built as /dev/<vgName>/<volumeName> and both components are
+	// constrained: NewManager rejects a volume group containing a path
+	// separator, and validateVolumeName rejects an empty name, any path
+	// separator, any "..", and anything outside LVM's [a-zA-Z0-9+_.-] charset.
+	// The path therefore cannot escape /dev/<vgName>, which is the precondition
+	// G304 is asking about. Validated in CreateVolume/PopulateVolume before we
+	// get here; the lvdisplay check above independently confirms the LV exists.
+	// #nosec G304
 	if _, err := os.Open(devicePath); err != nil {
 		return fmt.Errorf("device is not readable: %s: %w", devicePath, err)
 	}
 
 	// 5. Verify the device can be written to (attempt to get current size)
 	// This catches issues where the device exists but isn't properly initialized
-	cmd := exec.CommandContext(ctx, "blockdev", "--getsize64", devicePath)
+	// Routed through lvmCmd so the byte count comes back in the C locale like
+	// every other numeric read on this path.
+	cmd := lvmCmd(ctx, "blockdev", "--getsize64", devicePath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("device size query failed (device may not be properly initialized): %s: %w (output: %s)",
@@ -311,6 +356,9 @@ func (m *Manager) PopulateVolume(
 	store *storage.Store,
 	jobID string,
 ) error {
+	if err := validateVolumeName(volumeName); err != nil {
+		return err
+	}
 	// Start span for LVM volume population
 	tracer := otel.Tracer("libvirt-volume-provisioner")
 	ctx, span := tracer.Start(ctx, "PopulateVolume",
@@ -560,6 +608,9 @@ loop:
 
 // DeleteVolume deletes an LVM volume
 func (m *Manager) DeleteVolume(ctx context.Context, volumeName string) error {
+	if err := validateVolumeName(volumeName); err != nil {
+		return err
+	}
 	// Start span for LVM volume deletion
 	_, span := otel.Tracer("libvirt-volume-provisioner").Start(ctx, "DeleteVolume",
 		trace.WithAttributes(
