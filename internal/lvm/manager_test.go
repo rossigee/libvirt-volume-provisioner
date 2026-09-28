@@ -2,10 +2,12 @@ package lvm
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rossigee/libvirt-volume-provisioner/internal/config"
@@ -301,4 +303,91 @@ func TestQcow2ConvertIntegration(t *testing.T) {
 	dashInfo, _ := os.Stat(dashDevice)
 	assert.Equal(t, int64(0), dashInfo.Size(),
 		"stdout redirect should produce empty output (regression confirmed)")
+}
+
+// TestValidateDeviceBeforeConversion_NonExistent tests that validation fails gracefully
+// when the LVM volume doesn't exist (catches "Cannot grow device files" root cause).
+func TestValidateDeviceBeforeConversion_NonExistent(t *testing.T) {
+	manager := &Manager{
+		vgName: "testvg",
+	}
+
+	// Test with a volume that doesn't exist
+	err := manager.validateDeviceBeforeConversion(context.Background(), "/dev/testvg/nonexistent", "nonexistent")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "does not exist or is not accessible")
+}
+
+// TestValidateDeviceBeforeConversion_Success verifies the validation function signature
+// works correctly (actual validation requires real LVM setup in integration tests).
+func TestValidateDeviceBeforeConversion_Success(t *testing.T) {
+	// This is a unit test that verifies the function doesn't panic
+	// Full testing requires integration test with real LVM
+	manager := &Manager{
+		vgName: "testvg",
+	}
+
+	assert.NotPanics(t, func() {
+		_ = manager.validateDeviceBeforeConversion(context.Background(), "/dev/testvg/test", "test")
+	})
+}
+
+// TestCreateAndPopulateVolume_Sequence_Unit is a unit test that verifies
+// the logical sequence of operations: CreateVolume must be called before PopulateVolume.
+// Full integration test is in integration_test.go.
+func TestCreateAndPopulateVolume_Sequence_Unit(t *testing.T) {
+	// Test that PopulateVolume fails with a clear error if CreateVolume wasn't called
+	manager := &Manager{
+		vgName: "testvg",
+	}
+
+	updater := &MockProgressUpdater{}
+
+	// PopulateVolume should fail gracefully if volume doesn't exist
+	err := manager.PopulateVolume(
+		context.Background(),
+		"/tmp/test.img",
+		"nonexistent-volume",
+		"qcow2",
+		updater,
+		nil,
+		"test-job-id",
+	)
+	assert.Error(t, err)
+
+	// The error should be about device validation, not qemu-img failure
+	assert.Contains(t, err.Error(), "device validation failed", "error should be from validation, not qemu-img")
+}
+
+// TestDeviceValidationFuncs_Integration is an integration test that verifies
+// the full sequence works when LVM is available: create volume → validate device → populate.
+// This test is skipped if LVM tools are not available.
+func TestDeviceValidationFuncs_Integration(t *testing.T) {
+	if _, err := exec.LookPath("lvdisplay"); err != nil {
+		t.Skip("LVM tools not available in test environment")
+	}
+
+	manager, err := NewManager(testLVMCfg("data"))
+	if err != nil {
+		t.Skip("Cannot create LVM manager:", err)
+	}
+
+	// Sequence test: the validation check should work for existing volumes
+	// Try to validate a real volume if 'data' volume group has volumes
+	volumes, err := manager.ListVolumes()
+	if err != nil || len(volumes) == 0 {
+		t.Skip("No existing volumes in 'data' VG to test with")
+	}
+
+	testVolume := volumes[0]
+	devicePath := fmt.Sprintf("/dev/%s/%s", manager.vgName, testVolume)
+
+	// This should NOT return an error for an existing, active volume
+	err = manager.validateDeviceBeforeConversion(context.Background(), devicePath, testVolume)
+	if err != nil {
+		// Some environments might not have blockdev; that's ok
+		if !strings.Contains(err.Error(), "blockdev") {
+			assert.NoError(t, err, "validation should pass for existing volumes")
+		}
+	}
 }
