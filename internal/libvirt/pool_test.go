@@ -385,6 +385,56 @@ func TestEvictExpiredImages(t *testing.T) {
 		assert.Equal(t, 0, evicted)
 	})
 
+	// A download that fails partway leaves the image file with no .sha256
+	// sidecar. ListCachedImages only yields entries that have a sidecar, so the
+	// expiry sweep cannot see these and they were never reclaimed. The cache
+	// path is a tmpfs on the hypervisors, so each one held multi-GB of RAM
+	// until removed by hand. Real cache keys are sha256 of the image URL, so
+	// these use full 64-char hex keys.
+	t.Run("removes partial images that have no checksum sidecar", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pm := &PoolManager{poolPath: tmpDir}
+
+		partialKey := strings.Repeat("a", 64)  // abandoned partial download
+		completeKey := strings.Repeat("b", 64) // finished download, has sidecar
+
+		partialPath := filepath.Join(tmpDir, partialKey)
+		require.NoError(t, os.WriteFile(partialPath, []byte("partial"), 0o600))
+
+		completePath := filepath.Join(tmpDir, completeKey)
+		require.NoError(t, os.WriteFile(completePath, []byte("complete"), 0o600))
+		require.NoError(t, os.WriteFile(completePath+".sha256", []byte(completeKey), 0o600))
+
+		// A generous maxAge: the orphan must go regardless of age, while the
+		// complete image is young enough to survive on the expiry path.
+		evicted, err := pm.EvictExpiredImages(7 * 24 * time.Hour)
+		assert.NoError(t, err)
+		assert.Equal(t, 0, evicted, "the complete image is not expired")
+
+		_, err = os.Stat(partialPath)
+		assert.True(t, os.IsNotExist(err), "orphaned partial image should be removed")
+
+		_, err = os.Stat(completePath)
+		assert.NoError(t, err, "complete image should survive")
+		_, err = os.Stat(completePath + ".sha256")
+		assert.NoError(t, err, "sidecar should survive")
+	})
+
+	t.Run("leaves files that are not cache keys alone", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pm := &PoolManager{poolPath: tmpDir}
+
+		// Not 64 hex characters, so it is not an image file this code created.
+		strangerPath := filepath.Join(tmpDir, "not-a-cache-key")
+		require.NoError(t, os.WriteFile(strangerPath, []byte("unrelated"), 0o600))
+
+		_, err := pm.EvictExpiredImages(24 * time.Hour)
+		assert.NoError(t, err)
+
+		_, err = os.Stat(strangerPath)
+		assert.NoError(t, err, "non-cache-key files must not be deleted")
+	})
+
 	t.Run("no entries old enough leaves cache unchanged", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		pm := &PoolManager{poolPath: tmpDir}
