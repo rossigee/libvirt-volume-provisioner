@@ -464,7 +464,81 @@ func (pm *PoolManager) EvictExpiredImages(maxAge time.Duration) (int, error) {
 			evicted++
 		}
 	}
-	logrus.WithFields(logrus.Fields{"evicted": evicted, "total": len(images)}).
+	// Evict image files that have no .sha256 sidecar.
+	//
+	// ListCachedImages only yields entries that have a sidecar, because the
+	// sidecar is what makes a cached image usable and it supplies the modtime
+	// used for expiry above. A download that fails partway leaves the image
+	// file behind with no sidecar, so it never appears in that list and the
+	// sweep above could never reclaim it. The caller does delete the file when
+	// DownloadImageToPath returns an error, but not when a later stage aborts
+	// the job, and the cache path is under a tmpfs on these hypervisors, so
+	// every abandoned multi-GB file counts against RAM until someone removes it
+	// by hand. On itx-001/002/003 that accumulated into 30GB of orphans and
+	// then began failing new downloads with "insufficient disk space".
+	//
+	// Treat a sidecar-less file as expired regardless of age: it cannot be a
+	// valid cache entry, so there is nothing worth keeping.
+	orphans, err := pm.evictSidecarlessImages()
+	if err != nil {
+		return evicted, err
+	}
+
+	logrus.WithFields(logrus.Fields{"evicted": evicted, "orphans_removed": orphans, "total": len(images)}).
 		Info("Cache eviction sweep completed")
 	return evicted, nil
+}
+
+// evictSidecarlessImages removes image files in the cache that have no
+// accompanying .sha256 sidecar. These are abandoned partial downloads: a
+// complete download always has its checksum sidecar written alongside it.
+func (pm *PoolManager) evictSidecarlessImages() (int, error) {
+	entries, err := os.ReadDir(pm.poolPath)
+	if err != nil {
+		return 0, fmt.Errorf("eviction: failed to read cache directory: %w", err)
+	}
+
+	removed := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Sidecars are the marker of a complete image, not orphans themselves.
+		if strings.HasSuffix(name, ".sha256") {
+			continue
+		}
+		// Only 64-character lowercase hex cache keys are image files
+		// (AllocateImageFile rejects anything else), so anything else in here is
+		// not ours to delete.
+		if !isValidCacheKey(name) {
+			continue
+		}
+
+		imagePath := filepath.Join(pm.poolPath, name)
+		sidecarPath := imagePath + ".sha256"
+		if _, err := os.Stat(sidecarPath); err == nil {
+			continue // complete image, leave it to the expiry sweep
+		} else if !os.IsNotExist(err) {
+			logrus.WithError(err).WithField("image_path", sidecarPath).
+				Warn("Failed to stat checksum sidecar; skipping orphan check")
+			continue
+		}
+
+		var size int64
+		if info, statErr := entry.Info(); statErr == nil {
+			size = info.Size()
+		}
+		if err := os.Remove(imagePath); err != nil {
+			logrus.WithError(err).WithField("image_path", imagePath).
+				Error("Failed to remove orphaned partial image")
+			continue
+		}
+		logrus.WithFields(logrus.Fields{
+			"image_path": imagePath,
+			"size":       size,
+		}).Info("Removed orphaned partial image (no checksum sidecar)")
+		removed++
+	}
+	return removed, nil
 }

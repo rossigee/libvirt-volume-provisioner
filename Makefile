@@ -38,7 +38,7 @@ build: ## Build binary for current platform
 
 # Build for Linux (native architecture)
 build-linux: ## Build binary for current Linux architecture (used by deb target)
-	CGO_ENABLED=1 CGO_CFLAGS="-Wno-discarded-qualifiers" GOOS=linux $(GOBUILD) -tags libsqlite3 -ldflags "-X main.version=$(DEB_VERSION) -X 'main.buildTime=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")'" -o $(BINARY_UNIX) -v ./$(MAIN_PACKAGE)
+	CGO_ENABLED=1 CGO_CFLAGS="-Wno-discarded-qualifiers" GOOS=linux $(GOBUILD) -tags libsqlite3 -ldflags "-X main.version=$(DEB_VERSION) -X 'main.buildTime=$(shell LC_ALL=C date -u +"%Y-%m-%dT%H:%M:%SZ")'" -o $(BINARY_UNIX) -v ./$(MAIN_PACKAGE)
 
 # Test
 test: ## Run unit tests
@@ -222,7 +222,7 @@ deb: build-linux ## Build Debian .deb package
 	@echo "Source: https://github.com/rossigee/libvirt-volume-provisioner" >> $(DEB_BUILD_DIR)/usr/share/doc/$(DEB_NAME)/copyright
 	@echo "" >> $(DEB_BUILD_DIR)/usr/share/doc/$(DEB_NAME)/copyright
 	@echo "Files: *" >> $(DEB_BUILD_DIR)/usr/share/doc/$(DEB_NAME)/copyright
-	@echo "Copyright: $(shell date +%Y) Ross Gee" >> $(DEB_BUILD_DIR)/usr/share/doc/$(DEB_NAME)/copyright
+	@echo "Copyright: $(shell LC_ALL=C date +%Y) Ross Gee" >> $(DEB_BUILD_DIR)/usr/share/doc/$(DEB_NAME)/copyright
 	@echo "License: MIT" >> $(DEB_BUILD_DIR)/usr/share/doc/$(DEB_NAME)/copyright
 
 	# Build the package
