@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -41,6 +42,7 @@ type Job struct {
 	Error          error
 	CacheHit       bool
 	ImagePath      string
+	ImageURL       string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	cancelFunc     context.CancelFunc
@@ -439,12 +441,13 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 		job.UpdatedAt = time.Now()
 		status := job.Status
 		jobErr := job.Error
+		job.ImageURL = job.Request.ImageURL
 		job.mu.Unlock()
 
 		m.syncToDatabase(ctx, job)
 
 		if m.metrics != nil {
-			m.metrics.RecordJobEnd(string(status), time.Since(jobStart).Seconds())
+			m.metrics.RecordJobEndWithImage(string(status), path.Base(job.ImageURL), time.Since(jobStart).Seconds())
 		}
 
 		switch status {
@@ -645,28 +648,77 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 
 	if cachedImage != nil {
 		if !hasRemoteChecksum {
-			cacheSpan.SetAttributes(
-				attribute.String("cache.result", "hit_unverified"),
-				attribute.String("cache.path", cachedImage.Path),
-			)
-			cacheSpan.SetStatus(codes.Ok, "cache hit (unverified)")
-			cacheSpan.End()
-			logrus.WithFields(logrus.Fields{
-				"job_id":    job.ID,
-				"image_url": req.ImageURL,
-				"cache_key": cacheKey,
-			}).Info("Using cached image (remote checksum unavailable for verification)")
-			job.mu.Lock()
-			job.CacheHit = true
-			job.ImagePath = cachedImage.Path
-			job.mu.Unlock()
-			if m.metrics != nil {
-				m.metrics.RecordCacheHit()
+			// The sidecar in MinIO is missing, so the URL's current content cannot be
+			// compared against the cached file. The cache key is sha256(imageURL), so
+			// the key matching does not prove the bytes match: a rebuild can reuse the
+			// same object name in some pipelines, and a partial or tampered write that
+			// still produced a sidecar would pass.
+			//
+			// Rather than trust it, verify the cached file against the checksum
+			// recorded next to it. That detects corruption and truncation, which are
+			// the cases reachable without the remote sidecar. It cannot detect the
+			// artifact having been replaced by a different valid image, since the
+			// sidecar was written from that same file, but publishing a sidecar for
+			// every image is the real fix for that and is enforced below.
+			actualChecksum, sumErr := libvirt.CalculateChecksum(cachedImage.Path)
+			if sumErr != nil {
+				cacheSpan.RecordError(sumErr)
+				cacheSpan.SetAttributes(
+					attribute.String("cache.result", "hit_unverifiable"),
+					attribute.String("cache.path", cachedImage.Path),
+				)
+				cacheSpan.SetStatus(codes.Error, "cached image could not be hashed")
+				cacheSpan.End()
+				logrus.WithFields(logrus.Fields{
+					"job_id":    job.ID,
+					"image_url": req.ImageURL,
+					"cache_key": cacheKey,
+					"path":      cachedImage.Path,
+					"error":     sumErr,
+				}).Warn("Cached image could not be verified (remote checksum unavailable), re-downloading")
+				_ = m.libvirtPool.DeleteImage(cachedImage.Path)
+			} else if actualChecksum != cachedImage.Checksum {
+				cacheSpan.SetAttributes(
+					attribute.String("cache.result", "hit_corrupt"),
+					attribute.String("cache.path", cachedImage.Path),
+					attribute.String("stored_checksum", cachedImage.Checksum),
+					attribute.String("actual_checksum", actualChecksum),
+				)
+				cacheSpan.SetStatus(codes.Error, "cached image failed checksum verification")
+				cacheSpan.End()
+				logrus.WithFields(logrus.Fields{
+					"job_id":          job.ID,
+					"image_url":       req.ImageURL,
+					"cache_key":       cacheKey,
+					"stored_checksum": cachedImage.Checksum,
+					"actual_checksum": actualChecksum,
+				}).Warn("Cached image failed checksum verification, re-downloading")
+				_ = m.libvirtPool.DeleteImage(cachedImage.Path)
+			} else {
+				cacheSpan.SetAttributes(
+					attribute.String("cache.result", "hit_locally_verified"),
+					attribute.String("cache.path", cachedImage.Path),
+					attribute.String("image.checksum", actualChecksum),
+				)
+				cacheSpan.SetStatus(codes.Ok, "cache hit (verified against local checksum)")
+				cacheSpan.End()
+				logrus.WithFields(logrus.Fields{
+					"job_id":    job.ID,
+					"image_url": req.ImageURL,
+					"cache_key": cacheKey,
+					"path":      cachedImage.Path,
+					"checksum":  actualChecksum,
+				}).Info("Using cached image (verified against local checksum; remote sidecar absent)")
+				job.mu.Lock()
+				job.CacheHit = true
+				job.ImagePath = cachedImage.Path
+				job.mu.Unlock()
+				if m.metrics != nil {
+					m.metrics.RecordCacheHit()
+				}
+				return cachedImage.Path, nil
 			}
-			return cachedImage.Path, nil
-		}
-
-		if cachedImage.Checksum == remoteChecksum {
+		} else if cachedImage.Checksum == remoteChecksum {
 			cacheSpan.SetAttributes(
 				attribute.String("cache.result", "hit"),
 				attribute.String("cache.path", cachedImage.Path),
@@ -688,15 +740,18 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 				m.metrics.RecordCacheHit()
 			}
 			return cachedImage.Path, nil
+		} else {
+			// Only reachable when the remote sidecar was present and did not match the
+			// cached file. The unverified-local-checksum branches above handle the
+			// no-sidecar case and return or evict on their own.
+			logrus.WithFields(logrus.Fields{
+				"job_id":          job.ID,
+				"image_url":       req.ImageURL,
+				"stored_checksum": cachedImage.Checksum,
+				"remote_checksum": remoteChecksum,
+			}).Warn("Cached image is stale (checksum mismatch), re-downloading")
+			_ = m.libvirtPool.DeleteImage(cachedImage.Path)
 		}
-
-		logrus.WithFields(logrus.Fields{
-			"job_id":          job.ID,
-			"image_url":       req.ImageURL,
-			"stored_checksum": cachedImage.Checksum,
-			"remote_checksum": remoteChecksum,
-		}).Warn("Cached image is stale (checksum mismatch), re-downloading")
-		_ = m.libvirtPool.DeleteImage(cachedImage.Path)
 	}
 
 	cacheSpan.SetAttributes(attribute.String("cache.result", "miss"))
@@ -951,12 +1006,13 @@ func (m *Manager) runCacheJob(ctx context.Context, job *Job) {
 		job.UpdatedAt = time.Now()
 		status := job.Status
 		jobErr := job.Error
+		job.ImageURL = job.Request.ImageURL
 		job.mu.Unlock()
 
 		m.syncToDatabase(ctx, job)
 
 		if m.metrics != nil {
-			m.metrics.RecordJobEnd(string(status), time.Since(jobStart).Seconds())
+			m.metrics.RecordJobEndWithImage(string(status), path.Base(job.ImageURL), time.Since(jobStart).Seconds())
 		}
 
 		switch status {

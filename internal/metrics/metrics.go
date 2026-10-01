@@ -20,6 +20,13 @@ type Metrics struct {
 	JobsTotal   *prometheus.CounterVec
 	JobDuration *prometheus.HistogramVec
 
+	// JobImageTotal attributes completed jobs to the image they provisioned, so
+	// which artifact a given volume came from is answerable from metrics after
+	// the in-memory job records are gone. Labeled on the image basename only,
+	// which keeps cardinality bounded by the number of distinct images rather
+	// than the number of jobs.
+	JobImageTotal *prometheus.CounterVec
+
 	// Cache metrics
 	CacheHits     prometheus.Counter
 	CacheMisses   prometheus.Counter
@@ -93,6 +100,14 @@ func NewMetrics() *Metrics {
 				Buckets: []float64{1, 5, 10, 30, 60, 120, 300, 600},
 			},
 			[]string{"status"},
+		),
+
+		JobImageTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "libvirt_volume_provisioner_job_image_total",
+				Help: "Completed jobs by outcome and the image basename they provisioned",
+			},
+			[]string{"status", "image"},
 		),
 
 		// Cache metrics
@@ -201,6 +216,7 @@ func NewMetrics() *Metrics {
 		m.ActiveJobs,
 		m.JobsTotal,
 		m.JobDuration,
+		m.JobImageTotal,
 		m.CacheHits,
 		m.CacheMisses,
 		m.CacheHitRatio,
@@ -297,6 +313,19 @@ func (m *Metrics) RecordJobEnd(status string, duration float64) {
 	if m.JobDuration != nil {
 		m.JobDuration.WithLabelValues(status).Observe(duration)
 	}
+}
+
+// RecordJobEndWithImage records a job outcome attributed to the image it
+// provisioned. imageName should be the basename of the image URL.
+func (m *Metrics) RecordJobEndWithImage(status, imageName string, duration float64) {
+	m.RecordJobEnd(status, duration)
+	if m.JobImageTotal == nil {
+		return
+	}
+	if imageName == "" {
+		imageName = "unknown"
+	}
+	m.JobImageTotal.WithLabelValues(status, imageName).Inc()
 }
 
 // UpdateHealthStatus updates the overall health status
