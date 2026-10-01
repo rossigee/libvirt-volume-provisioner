@@ -113,6 +113,7 @@ type LibvirtPool interface {
 	DeleteImage(imagePath string) error
 	ListCachedImages() ([]*libvirt.ImageCache, error)
 	EvictExpiredImages(maxAge time.Duration) (int, error)
+	EvictImages(maxAge time.Duration, maxSizeBytes int64) (int, error)
 }
 
 // MinioClient is the interface Manager uses to interact with MinIO.
@@ -138,7 +139,8 @@ type Manager struct {
 // NewManager creates a new job manager.
 func NewManager(minioClient MinioClient, lvmManager *lvm.Manager,
 	libvirtPool LibvirtPool, store *storage.Store, met *appmetrics.Metrics,
-	maxConcurrent int, jobTimeout, cacheMaxAge, cacheEvictionInterval time.Duration) *Manager {
+	maxConcurrent int, jobTimeout, cacheMaxAge, cacheEvictionInterval time.Duration,
+	cacheMaxSizeBytes int64) *Manager {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	mgr := &Manager{
 		minioClient: minioClient,
@@ -158,13 +160,13 @@ func NewManager(minioClient MinioClient, lvmManager *lvm.Manager,
 		met.UpdateDependencyStatus("storage", store != nil)
 	}
 	if libvirtPool != nil {
-		go mgr.runEvictionLoop(bgCtx, cacheMaxAge, cacheEvictionInterval)
+		go mgr.runEvictionLoop(bgCtx, cacheMaxAge, cacheEvictionInterval, cacheMaxSizeBytes)
 	}
 	go mgr.runCleanupLoop(bgCtx)
 	return mgr
 }
 
-func (m *Manager) runEvictionLoop(ctx context.Context, maxAge, interval time.Duration) {
+func (m *Manager) runEvictionLoop(ctx context.Context, maxAge, interval time.Duration, maxSizeBytes int64) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -172,7 +174,7 @@ func (m *Manager) runEvictionLoop(ctx context.Context, maxAge, interval time.Dur
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := m.libvirtPool.EvictExpiredImages(maxAge); err != nil {
+			if _, err := m.libvirtPool.EvictImages(maxAge, maxSizeBytes); err != nil {
 				logrus.WithError(err).Error("Cache eviction sweep failed")
 			}
 		}

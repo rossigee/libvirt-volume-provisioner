@@ -407,9 +407,14 @@ func TestEvictExpiredImages(t *testing.T) {
 
 		// A generous maxAge: the orphan must go regardless of age, while the
 		// complete image is young enough to survive on the expiry path.
+		//
+		// The count includes orphaned sidecar-less files, which the sweep reclaims
+		// ahead of the size budget because they are invisible to ListCachedImages
+		// and would otherwise count against it. So one removal here is the orphan,
+		// not the young complete image.
 		evicted, err := pm.EvictExpiredImages(7 * 24 * time.Hour)
 		assert.NoError(t, err)
-		assert.Equal(t, 0, evicted, "the complete image is not expired")
+		assert.Equal(t, 1, evicted, "only the orphaned partial image should be removed")
 
 		_, err = os.Stat(partialPath)
 		assert.True(t, os.IsNotExist(err), "orphaned partial image should be removed")
@@ -451,4 +456,90 @@ func TestEvictExpiredImages(t *testing.T) {
 		_, err = os.Stat(imgPath)
 		assert.NoError(t, err, "recent image should not be evicted")
 	})
+}
+
+// A cache that lives in the pool directory is bounded by size, not just age: on
+// these hypervisors that directory is inside the root devtmpfs, so a week of
+// multi-gigabyte images cannot fit. EvictImages must shed least-recently-used
+// entries until the cache fits.
+func TestEvictImages_SizeLimit(t *testing.T) {
+	tmpDir := t.TempDir()
+	pm := &PoolManager{poolPath: tmpDir}
+
+	// Three 100-byte "images", oldest first.
+	keys := []string{
+		strings.Repeat("1", 64),
+		strings.Repeat("2", 64),
+		strings.Repeat("3", 64),
+	}
+	base := time.Now().Add(-3 * time.Hour)
+	for i, key := range keys {
+		p := filepath.Join(tmpDir, key)
+		require.NoError(t, os.WriteFile(p, make([]byte, 100), 0o600))
+		require.NoError(t, os.WriteFile(p+".sha256", []byte(key), 0o600))
+		// Sidecar mtime is what ListCachedImages reports as ModTime.
+		stamp := base.Add(time.Duration(i) * time.Hour)
+		require.NoError(t, os.Chtimes(p+".sha256", stamp, stamp))
+	}
+
+	// 250 bytes of budget against 300 bytes cached: the oldest must go.
+	evicted, err := pm.EvictImages(7*24*time.Hour, 250)
+	require.NoError(t, err)
+	assert.Equal(t, 1, evicted)
+
+	_, err = os.Stat(filepath.Join(tmpDir, keys[0]))
+	assert.True(t, os.IsNotExist(err), "oldest image should be evicted first")
+
+	// The two newest survive.
+	for _, key := range keys[1:] {
+		_, err := os.Stat(filepath.Join(tmpDir, key))
+		assert.NoError(t, err, "newer images should survive the size sweep")
+	}
+}
+
+// A zero budget disables the size sweep, leaving age as the only bound.
+func TestEvictImages_ZeroSizeDisablesSizeSweep(t *testing.T) {
+	tmpDir := t.TempDir()
+	pm := &PoolManager{poolPath: tmpDir}
+
+	key := strings.Repeat("c", 64)
+	p := filepath.Join(tmpDir, key)
+	require.NoError(t, os.WriteFile(p, make([]byte, 100), 0o600))
+	require.NoError(t, os.WriteFile(p+".sha256", []byte(key), 0o600))
+
+	evicted, err := pm.EvictImages(7*24*time.Hour, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 0, evicted)
+	_, err = os.Stat(p)
+	assert.NoError(t, err, "a young image must survive when no size budget is set")
+}
+
+// The sweep must actually bring a heavily oversize cache back under the bound.
+func TestEvictImages_ShedsUntilUnderLimit(t *testing.T) {
+	tmpDir := t.TempDir()
+	pm := &PoolManager{poolPath: tmpDir}
+
+	const size = 1000
+	keys := make([]string, 5)
+	for i := range keys {
+		keys[i] = strings.Repeat(string(rune('a'+i)), 64)
+		p := filepath.Join(tmpDir, keys[i])
+		require.NoError(t, os.WriteFile(p, make([]byte, size), 0o600))
+		require.NoError(t, os.WriteFile(p+".sha256", []byte(keys[i]), 0o600))
+		stamp := time.Now().Add(-time.Duration(len(keys)-i) * time.Hour)
+		require.NoError(t, os.Chtimes(p+".sha256", stamp, stamp))
+	}
+
+	// 5000 cached, budget 2100: keep two images, evict three.
+	evicted, err := pm.EvictImages(7*24*time.Hour, 2100)
+	require.NoError(t, err)
+	assert.Equal(t, 3, evicted)
+
+	images, err := pm.ListCachedImages()
+	require.NoError(t, err)
+	var total uint64
+	for _, img := range images {
+		total += img.Size
+	}
+	assert.LessOrEqual(t, total, uint64(2100), "cache must end within the size budget")
 }

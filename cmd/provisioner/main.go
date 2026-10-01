@@ -257,7 +257,7 @@ func main() {
 	jobTimeout := time.Duration(cfg.Libvirt.JobTimeoutMinutes) * time.Minute
 	jobManager := jobs.NewManager(
 		minioClient, lvmManager, libvirtPool, store, appMetrics,
-		cfg.Libvirt.MaxConcurrent, jobTimeout, cacheMaxAge, cacheEvictionInterval,
+		cfg.Libvirt.MaxConcurrent, jobTimeout, cacheMaxAge, cacheEvictionInterval, cfg.Cache.MaxSizeBytes,
 	)
 
 	if err := jobManager.RecoverJobs(); err != nil {
