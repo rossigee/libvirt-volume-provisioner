@@ -3,6 +3,7 @@ package metrics
 import (
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -86,4 +87,36 @@ func TestUpdateHealthStatus(t *testing.T) {
 		metrics.UpdateDependencyStatus("minio", true)
 		metrics.UpdateDependencyStatus("lvm", false)
 	})
+}
+
+// A job's outcome must be attributable to the image it provisioned. Without
+// this, once the in-memory job records are gone there is no way to tell which
+// artifact a volume was built from, which is exactly what is needed to explain
+// a guest booting stale image content.
+func TestRecordJobEndWithImageAttributesOutcomeToImage(t *testing.T) {
+	m := NewMetrics()
+
+	m.RecordJobEndWithImage("completed", "k8s-node-20261001083428.qcow2", 42.0)
+	m.RecordJobEndWithImage("completed", "k8s-node-20261001083428.qcow2", 44.0)
+	m.RecordJobEndWithImage("failed", "k8s-node-20260923075129.qcow2", 3.0)
+
+	got := testutil.ToFloat64(m.JobImageTotal.WithLabelValues("completed", "k8s-node-20261001083428.qcow2"))
+	assert.Equal(t, 2.0, got, "both completions must be counted against the image")
+
+	failed := testutil.ToFloat64(m.JobImageTotal.WithLabelValues("failed", "k8s-node-20260923075129.qcow2"))
+	assert.Equal(t, 1.0, failed)
+
+	// The existing status-only counter must still be incremented, so existing
+	// dashboards and alerts keep working.
+	assert.Equal(t, 3.0, testutil.ToFloat64(m.JobsTotal.WithLabelValues("completed"))+
+		testutil.ToFloat64(m.JobsTotal.WithLabelValues("failed")))
+}
+
+// An empty image name must not produce an unbounded set of label values.
+func TestRecordJobEndWithImageHandlesEmptyName(t *testing.T) {
+	m := NewMetrics()
+	assert.NotPanics(t, func() {
+		m.RecordJobEndWithImage("completed", "", 1.0)
+	})
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.JobImageTotal.WithLabelValues("completed", "unknown")))
 }
