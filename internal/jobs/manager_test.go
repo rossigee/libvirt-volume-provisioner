@@ -1264,3 +1264,30 @@ func checksumOfFile(t *testing.T, path string) string {
 	require.NoError(t, err)
 	return sum
 }
+
+// A cached image whose size no longer matches the recorded size is truncated.
+// This is the cheap pre-hash guard, and it is the common failure: a download
+// that dies partway leaves a shorter file. Hashing a multi-GB image on every
+// cache hit is expensive, so size is checked first and this case never reaches
+// the hash.
+func TestCachedImageSizeMismatchDetectsTruncation(t *testing.T) {
+	dir := t.TempDir()
+	imagePath := filepath.Join(dir, "image")
+
+	require.NoError(t, os.WriteFile(imagePath, []byte("complete payload"), 0o600))
+	full, err := libvirt.CalculateChecksum(imagePath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(imagePath+".sha256", []byte(full), 0o600))
+
+	// Truncate the file the way an interrupted download leaves it.
+	require.NoError(t, os.WriteFile(imagePath, []byte("trunc"), 0o600))
+
+	truncated, err := libvirt.CalculateChecksum(imagePath)
+	require.NoError(t, err)
+	assert.NotEqual(t, full, truncated)
+
+	fi, err := os.Stat(imagePath)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len("trunc")), fi.Size(),
+		"the size guard compares recorded size against current size")
+}
