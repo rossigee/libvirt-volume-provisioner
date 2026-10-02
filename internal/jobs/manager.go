@@ -32,17 +32,22 @@ import (
 
 // Job represents a volume provisioning job.
 type Job struct {
-	mu             sync.RWMutex // protects all fields below
-	ID             string
-	CorrelationID  string
-	Status         types.JobStatus
-	Request        types.ProvisionRequest
-	Progress       *types.ProgressInfo
-	Error          error
-	CacheHit       bool
-	ImagePath      string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	mu            sync.RWMutex // protects all fields below
+	ID            string
+	CorrelationID string
+	Status        types.JobStatus
+	Request       types.ProvisionRequest
+	Progress      *types.ProgressInfo
+	Error         error
+	CacheHit      bool
+	ImagePath     string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	// LeakedVolume names a volume that provisioning created and could not remove
+	// during rollback. Non-empty means the host is carrying a volume nothing owns,
+	// which is what filled the volume groups during the runner churn. It is
+	// surfaced so the leak is visible instead of being silently retried.
+	LeakedVolume   string
 	cancelFunc     context.CancelFunc
 	downloadWeight float64
 	convertWeight  float64
@@ -563,8 +568,16 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 					"volume_name": req.VolumeName,
 				}).Error("Rollback failed: could not delete volume")
 
+				// The volume could not be reclaimed. Leaving the job retryable made
+				// this the livelock that filled the volume group: each attempt
+				// recreated the volume, failed, and could not remove it, forever.
+				// DeleteVolume now has bounded retries of its own, so a failure
+				// here means the volume is genuinely held. Fail the job terminally
+				// and record it, so the caller sees a distinct error and the leak
+				// is visible rather than silently retried.
 				job.mu.Lock()
 				job.Error = fmt.Errorf("provision failed + rollback failed: %w", deleteErr)
+				job.LeakedVolume = req.VolumeName
 				job.mu.Unlock()
 			}
 		}
