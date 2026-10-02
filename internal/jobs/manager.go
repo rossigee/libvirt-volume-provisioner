@@ -654,27 +654,37 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 			// same object name in some pipelines, and a partial or tampered write that
 			// still produced a sidecar would pass.
 			//
-			// Rather than trust it, verify the cached file against the checksum
-			// recorded next to it. That detects corruption and truncation, which are
-			// the cases reachable without the remote sidecar. It cannot detect the
-			// artifact having been replaced by a different valid image, since the
-			// sidecar was written from that same file, but publishing a sidecar for
-			// every image is the real fix for that and is enforced below.
-			actualChecksum, sumErr := libvirt.CalculateChecksum(cachedImage.Path)
-			if sumErr != nil {
-				cacheSpan.RecordError(sumErr)
+			// Verify the cached file against the checksum recorded next to it before
+			// using it. Size is checked first because truncation, the common failure
+			// here, is caught without reading the file: hashing a 6GB image costs
+			// seconds per job, and this cache directory is tmpfs on these
+			// hypervisors so the read is RAM traffic as well as I/O.
+			var verifyErr error
+			if fi, statErr := os.Stat(cachedImage.Path); statErr != nil {
+				verifyErr = statErr
+			} else if uint64(fi.Size()) != cachedImage.Size {
+				verifyErr = fmt.Errorf("cached image size %d does not match recorded %d", fi.Size(), cachedImage.Size)
+			}
+
+			actualChecksum := ""
+			if verifyErr == nil {
+				actualChecksum, verifyErr = libvirt.CalculateChecksum(cachedImage.Path)
+			}
+
+			if verifyErr != nil {
+				cacheSpan.RecordError(verifyErr)
 				cacheSpan.SetAttributes(
 					attribute.String("cache.result", "hit_unverifiable"),
 					attribute.String("cache.path", cachedImage.Path),
 				)
-				cacheSpan.SetStatus(codes.Error, "cached image could not be hashed")
+				cacheSpan.SetStatus(codes.Error, "cached image failed pre-hash verification")
 				cacheSpan.End()
 				logrus.WithFields(logrus.Fields{
 					"job_id":    job.ID,
 					"image_url": req.ImageURL,
 					"cache_key": cacheKey,
 					"path":      cachedImage.Path,
-					"error":     sumErr,
+					"error":     verifyErr,
 				}).Warn("Cached image could not be verified (remote checksum unavailable), re-downloading")
 				_ = m.libvirtPool.DeleteImage(cachedImage.Path)
 			} else if actualChecksum != cachedImage.Checksum {
