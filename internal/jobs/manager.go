@@ -220,6 +220,29 @@ func (m *Manager) DeleteCachedImage(cacheKey string) error {
 	return nil
 }
 
+// DeleteVolume removes an LVM volume by name.
+//
+// This exists because the volume's lifecycle is split across two owners. The
+// operator creates the volume through POST /api/v1/jobs, which allocates the LV
+// on this host, and then creates a Crossplane Volume CR to adopt it. From then on
+// the operator deletes the CR and relies on the Crossplane provider to remove
+// the LV. But a VM that dies between the LV being allocated and the CR being
+// created leaves an LV that nothing owns: there is no CR to delete, so no
+// operator code path can reach it, and the volume group fills until provisioning
+// fails with "not enough free extents".
+//
+// The rollback path in ProvisionVolume reclaims its own volume on failure, but
+// only when the failure is noticed there. A VM deleted while still Provisioning
+// never reaches that path, so the operator needs to be able to reclaim directly.
+//
+// Deletion is idempotent: a volume that is already gone reports success.
+func (m *Manager) DeleteVolume(ctx context.Context, volumeName string) error {
+	if err := m.lvmManager.DeleteVolume(ctx, volumeName); err != nil {
+		return fmt.Errorf("failed to delete volume %s: %w", volumeName, err)
+	}
+	return nil
+}
+
 // syncToDatabase persists a snapshot of job state to the database.
 func (m *Manager) syncToDatabase(ctx context.Context, job *Job) {
 	if m.store == nil {
