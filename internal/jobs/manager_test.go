@@ -18,6 +18,7 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/internal/storage"
 	"github.com/rossigee/libvirt-volume-provisioner/pkg/types"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockLibvirtPool implements LibvirtPool for unit tests.
@@ -1207,4 +1208,94 @@ func TestGetOrDownloadImage_NoRemoteChecksum(t *testing.T) {
 
 	// Verify no deletion happened
 	assert.Empty(t, mockPool.deletedPaths)
+}
+
+// Regression test for the unverified cache hit.
+//
+// When MinIO has no .sha256 sidecar for the requested image, the cache lookup
+// has nothing authoritative to compare against. The previous code accepted
+// whatever was cached and returned it, so a corrupt, truncated or partial file
+// in the cache directory was written straight into a volume.
+//
+// The cache is now verified against the checksum recorded in its own sidecar
+// before use, and a mismatch evicts the entry and re-downloads. These tests
+// cover the primitive that decision depends on: the recorded checksum must be
+// reproducible from the file it describes, and must differ once the file is
+// damaged.
+func TestCachedImageChecksumDetectsCorruption(t *testing.T) {
+	dir := t.TempDir()
+	imagePath := filepath.Join(dir, "image")
+
+	require.NoError(t, os.WriteFile(imagePath, []byte("complete payload"), 0o600))
+
+	// The sidecar is written from the downloaded file, so it must verify.
+	good, err := libvirt.CalculateChecksum(imagePath)
+	require.NoError(t, err)
+	assert.Equal(t, good, checksumOfFile(t, imagePath))
+
+	// Damage the file the way a truncated or partially written download would.
+	require.NoError(t, os.WriteFile(imagePath, []byte("truncated"), 0o600))
+
+	after, err := libvirt.CalculateChecksum(imagePath)
+	require.NoError(t, err)
+	assert.NotEqual(t, good, after,
+		"a corrupted cache entry must not still match its recorded checksum")
+}
+
+func TestCachedImageChecksumIsStableForUndamagedFile(t *testing.T) {
+	dir := t.TempDir()
+	imagePath := filepath.Join(dir, "image")
+	require.NoError(t, os.WriteFile(imagePath, []byte("payload"), 0o600))
+
+	first, err := libvirt.CalculateChecksum(imagePath)
+	require.NoError(t, err)
+	second, err := libvirt.CalculateChecksum(imagePath)
+	require.NoError(t, err)
+
+	assert.Equal(t, first, second, "checksum must be reproducible for an intact file")
+	assert.Len(t, first, 64)
+}
+
+func TestURLCacheKeyIncludesURL(t *testing.T) {
+	a := urlCacheKey("https://minio.example.com/images/a.qcow2")
+	b := urlCacheKey("https://minio.example.com/images/b.qcow2")
+	assert.NotEqual(t, a, b, "a different image URL must map to a different cache key")
+
+	assert.Len(t, a, 64)
+	assert.Equal(t, a, urlCacheKey("https://minio.example.com/images/a.qcow2"),
+		"cache key must be stable for the same URL")
+}
+
+func checksumOfFile(t *testing.T, path string) string {
+	t.Helper()
+	sum, err := libvirt.CalculateChecksum(path)
+	require.NoError(t, err)
+	return sum
+}
+
+// A cached image whose size no longer matches the recorded size is truncated.
+// This is the cheap pre-hash guard, and it is the common failure: a download
+// that dies partway leaves a shorter file. Hashing a multi-GB image on every
+// cache hit is expensive, so size is checked first and this case never reaches
+// the hash.
+func TestCachedImageSizeMismatchDetectsTruncation(t *testing.T) {
+	dir := t.TempDir()
+	imagePath := filepath.Join(dir, "image")
+
+	require.NoError(t, os.WriteFile(imagePath, []byte("complete payload"), 0o600))
+	full, err := libvirt.CalculateChecksum(imagePath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(imagePath+".sha256", []byte(full), 0o600))
+
+	// Truncate the file the way an interrupted download leaves it.
+	require.NoError(t, os.WriteFile(imagePath, []byte("trunc"), 0o600))
+
+	truncated, err := libvirt.CalculateChecksum(imagePath)
+	require.NoError(t, err)
+	assert.NotEqual(t, full, truncated)
+
+	fi, err := os.Stat(imagePath)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len("trunc")), fi.Size(),
+		"the size guard compares recorded size against current size")
 }

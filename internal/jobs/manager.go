@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -32,17 +33,18 @@ import (
 
 // Job represents a volume provisioning job.
 type Job struct {
-	mu            sync.RWMutex // protects all fields below
-	ID            string
-	CorrelationID string
-	Status        types.JobStatus
-	Request       types.ProvisionRequest
-	Progress      *types.ProgressInfo
-	Error         error
-	CacheHit      bool
-	ImagePath     string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	mu             sync.RWMutex // protects all fields below
+	ID             string
+	CorrelationID  string
+	Status         types.JobStatus
+	Request        types.ProvisionRequest
+	Progress       *types.ProgressInfo
+	Error          error
+	CacheHit       bool
+	ImagePath      string
+	ImageURL       string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 	// LeakedVolume names a volume that provisioning created and could not remove
 	// during rollback. Non-empty means the host is carrying a volume nothing owns,
 	// which is what filled the volume groups during the runner churn. It is
@@ -446,12 +448,13 @@ func (m *Manager) runJob(ctx context.Context, job *Job) {
 		job.UpdatedAt = time.Now()
 		status := job.Status
 		jobErr := job.Error
+		job.ImageURL = job.Request.ImageURL
 		job.mu.Unlock()
 
 		m.syncToDatabase(ctx, job)
 
 		if m.metrics != nil {
-			m.metrics.RecordJobEnd(string(status), time.Since(jobStart).Seconds())
+			m.metrics.RecordJobEndWithImage(string(status), path.Base(job.ImageURL), time.Since(jobStart).Seconds())
 		}
 
 		switch status {
@@ -660,28 +663,87 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 
 	if cachedImage != nil {
 		if !hasRemoteChecksum {
-			cacheSpan.SetAttributes(
-				attribute.String("cache.result", "hit_unverified"),
-				attribute.String("cache.path", cachedImage.Path),
-			)
-			cacheSpan.SetStatus(codes.Ok, "cache hit (unverified)")
-			cacheSpan.End()
-			logrus.WithFields(logrus.Fields{
-				"job_id":    job.ID,
-				"image_url": req.ImageURL,
-				"cache_key": cacheKey,
-			}).Info("Using cached image (remote checksum unavailable for verification)")
-			job.mu.Lock()
-			job.CacheHit = true
-			job.ImagePath = cachedImage.Path
-			job.mu.Unlock()
-			if m.metrics != nil {
-				m.metrics.RecordCacheHit()
+			// The sidecar in MinIO is missing, so the URL's current content cannot be
+			// compared against the cached file. The cache key is sha256(imageURL), so
+			// the key matching does not prove the bytes match: a rebuild can reuse the
+			// same object name in some pipelines, and a partial or tampered write that
+			// still produced a sidecar would pass.
+			//
+			// Verify the cached file against the checksum recorded next to it before
+			// using it. Size is checked first because truncation, the common failure
+			// here, is caught without reading the file: hashing a 6GB image costs
+			// seconds per job, and this cache directory is tmpfs on these
+			// hypervisors so the read is RAM traffic as well as I/O.
+			var verifyErr error
+			if fi, statErr := os.Stat(cachedImage.Path); statErr != nil {
+				verifyErr = statErr
+			} else if uint64(fi.Size()) != cachedImage.Size {
+				verifyErr = fmt.Errorf("cached image size %d does not match recorded %d", fi.Size(), cachedImage.Size)
 			}
-			return cachedImage.Path, nil
-		}
 
-		if cachedImage.Checksum == remoteChecksum {
+			actualChecksum := ""
+			if verifyErr == nil {
+				actualChecksum, verifyErr = libvirt.CalculateChecksum(cachedImage.Path)
+			}
+
+			if verifyErr != nil {
+				cacheSpan.RecordError(verifyErr)
+				cacheSpan.SetAttributes(
+					attribute.String("cache.result", "hit_unverifiable"),
+					attribute.String("cache.path", cachedImage.Path),
+				)
+				cacheSpan.SetStatus(codes.Error, "cached image failed pre-hash verification")
+				cacheSpan.End()
+				logrus.WithFields(logrus.Fields{
+					"job_id":    job.ID,
+					"image_url": req.ImageURL,
+					"cache_key": cacheKey,
+					"path":      cachedImage.Path,
+					"error":     verifyErr,
+				}).Warn("Cached image could not be verified (remote checksum unavailable), re-downloading")
+				_ = m.libvirtPool.DeleteImage(cachedImage.Path)
+			} else if actualChecksum != cachedImage.Checksum {
+				cacheSpan.SetAttributes(
+					attribute.String("cache.result", "hit_corrupt"),
+					attribute.String("cache.path", cachedImage.Path),
+					attribute.String("stored_checksum", cachedImage.Checksum),
+					attribute.String("actual_checksum", actualChecksum),
+				)
+				cacheSpan.SetStatus(codes.Error, "cached image failed checksum verification")
+				cacheSpan.End()
+				logrus.WithFields(logrus.Fields{
+					"job_id":          job.ID,
+					"image_url":       req.ImageURL,
+					"cache_key":       cacheKey,
+					"stored_checksum": cachedImage.Checksum,
+					"actual_checksum": actualChecksum,
+				}).Warn("Cached image failed checksum verification, re-downloading")
+				_ = m.libvirtPool.DeleteImage(cachedImage.Path)
+			} else {
+				cacheSpan.SetAttributes(
+					attribute.String("cache.result", "hit_locally_verified"),
+					attribute.String("cache.path", cachedImage.Path),
+					attribute.String("image.checksum", actualChecksum),
+				)
+				cacheSpan.SetStatus(codes.Ok, "cache hit (verified against local checksum)")
+				cacheSpan.End()
+				logrus.WithFields(logrus.Fields{
+					"job_id":    job.ID,
+					"image_url": req.ImageURL,
+					"cache_key": cacheKey,
+					"path":      cachedImage.Path,
+					"checksum":  actualChecksum,
+				}).Info("Using cached image (verified against local checksum; remote sidecar absent)")
+				job.mu.Lock()
+				job.CacheHit = true
+				job.ImagePath = cachedImage.Path
+				job.mu.Unlock()
+				if m.metrics != nil {
+					m.metrics.RecordCacheHit()
+				}
+				return cachedImage.Path, nil
+			}
+		} else if cachedImage.Checksum == remoteChecksum {
 			cacheSpan.SetAttributes(
 				attribute.String("cache.result", "hit"),
 				attribute.String("cache.path", cachedImage.Path),
@@ -703,15 +765,18 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 				m.metrics.RecordCacheHit()
 			}
 			return cachedImage.Path, nil
+		} else {
+			// Only reachable when the remote sidecar was present and did not match the
+			// cached file. The unverified-local-checksum branches above handle the
+			// no-sidecar case and return or evict on their own.
+			logrus.WithFields(logrus.Fields{
+				"job_id":          job.ID,
+				"image_url":       req.ImageURL,
+				"stored_checksum": cachedImage.Checksum,
+				"remote_checksum": remoteChecksum,
+			}).Warn("Cached image is stale (checksum mismatch), re-downloading")
+			_ = m.libvirtPool.DeleteImage(cachedImage.Path)
 		}
-
-		logrus.WithFields(logrus.Fields{
-			"job_id":          job.ID,
-			"image_url":       req.ImageURL,
-			"stored_checksum": cachedImage.Checksum,
-			"remote_checksum": remoteChecksum,
-		}).Warn("Cached image is stale (checksum mismatch), re-downloading")
-		_ = m.libvirtPool.DeleteImage(cachedImage.Path)
 	}
 
 	cacheSpan.SetAttributes(attribute.String("cache.result", "miss"))
@@ -966,12 +1031,13 @@ func (m *Manager) runCacheJob(ctx context.Context, job *Job) {
 		job.UpdatedAt = time.Now()
 		status := job.Status
 		jobErr := job.Error
+		job.ImageURL = job.Request.ImageURL
 		job.mu.Unlock()
 
 		m.syncToDatabase(ctx, job)
 
 		if m.metrics != nil {
-			m.metrics.RecordJobEnd(string(status), time.Since(jobStart).Seconds())
+			m.metrics.RecordJobEndWithImage(string(status), path.Base(job.ImageURL), time.Since(jobStart).Seconds())
 		}
 
 		switch status {
