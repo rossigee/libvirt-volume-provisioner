@@ -62,6 +62,16 @@ type LVMConfig struct {
 type CacheConfig struct {
 	MaxAge           string `yaml:"max_age"`
 	EvictionInterval string `yaml:"eviction_interval"`
+	// MaxSizeBytes bounds the total size of the image cache. Zero disables the
+	// size-based sweep and leaves MaxAge as the only bound.
+	//
+	// The cache lives in the libvirt pool directory, which on these hypervisors is
+	// a directory inside the root devtmpfs -- that is, RAM. MaxAge alone cannot
+	// bound it: at roughly 6.5GB per image, seven days of images cannot fit in a
+	// 40GB RAM disk, so the cache grew until new downloads failed with
+	// "insufficient disk space". A size bound is what actually constrains a cache
+	// living on a space-constrained filesystem.
+	MaxSizeBytes int64 `yaml:"max_size_bytes"`
 }
 
 // LoggingConfig holds logging output settings.
@@ -112,6 +122,10 @@ func defaults() Config {
 		Cache: CacheConfig{
 			MaxAge:           "168h",
 			EvictionInterval: "1h",
+			// The pool directory is devtmpfs on these hosts, so the cache competes
+			// with everything else for RAM. 20GB leaves headroom on a 40GB tmpfs
+			// while still holding several images for reuse.
+			MaxSizeBytes: 20 * 1024 * 1024 * 1024,
 		},
 		Logging: LoggingConfig{
 			Level:  "info",

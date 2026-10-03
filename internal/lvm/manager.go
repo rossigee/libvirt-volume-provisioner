@@ -619,17 +619,58 @@ func (m *Manager) DeleteVolume(ctx context.Context, volumeName string) error {
 	defer span.End()
 
 	if !m.volumeExists(ctx, volumeName) {
-		span.SetStatus(codes.Error, "volume does not exist")
-		return fmt.Errorf("volume %s does not exist", volumeName)
+		// Already gone. Deletion is idempotent: the point of a rollback is that
+		// the volume ends up absent, so an absent volume is success. Returning an
+		// error here made the caller report "rollback failed" for a volume that
+		// had in fact been reclaimed.
+		span.SetStatus(codes.Ok, "volume already absent")
+		return nil
 	}
 
-	cmd := lvmCmd(ctx, "lvremove", "-f", fmt.Sprintf("%s/%s", m.vgName, volumeName))
-	output, err := cmd.CombinedOutput()
+	// lvremove on an active volume fails with "Logical volume <vg>/<name> in
+	// use" whenever the dm device is still mapped, even with no guest holding it.
+	// The provisioning path opens the device to populate it, and a populate that
+	// fails can leave it mapped, so a bare lvremove refused to reclaim it.
+	//
+	// Deactivate first, which is what actually releases a mapped-but-unheld
+	// device, then remove. Retried with backoff like CreateVolume and
+	// PopulateVolume so a transient busy device does not fail the rollback, and so
+	// the attempt is bounded rather than looping forever on a genuinely held
+	// volume - which is what leaked runner-v4-test-root and turned one bad volume
+	// into a permanent retry loop against a host.
+	err := retry.WithRetry(ctx, m.retryConfig, func() error {
+		deactivate := lvmCmd(ctx, "lvchange", "-an", "-f", fmt.Sprintf("%s/%s", m.vgName, volumeName))
+		if out, derr := deactivate.CombinedOutput(); derr != nil &&
+			!strings.Contains(string(out), "not found") {
+			// Deactivation failing is not itself fatal: the volume may already be
+			// inactive, in which case lvremove is all that is needed. Log and let
+			// the removal attempt decide.
+			logrus.WithFields(logrus.Fields{
+				"volume_name": volumeName,
+				"output":      strings.TrimSpace(string(out)),
+			}).Debug("lvchange -an failed; attempting lvremove anyway")
+		}
+
+		cmd := lvmCmd(ctx, "lvremove", "-f", fmt.Sprintf("%s/%s", m.vgName, volumeName))
+		output, rerr := cmd.CombinedOutput()
+		if rerr != nil {
+			logrus.WithFields(logrus.Fields{
+				"volume_name": volumeName,
+				"error":       rerr,
+				"output":      strings.TrimSpace(string(output)),
+			}).Warn("lvremove failed")
+			return fmt.Errorf("lvremove %s: %w: %s", volumeName, rerr, strings.TrimSpace(string(output)))
+		}
+		return nil
+	})
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
+		if !m.volumeExists(ctx, volumeName) {
+			// Lost the race with another remover; the goal is met.
+			span.SetStatus(codes.Ok, "volume deleted concurrently")
+			return nil
+		}
+		logrus.WithError(err).WithFields(logrus.Fields{
 			"volume_name": volumeName,
-			"error":       err,
-			"output":      string(output),
 		}).Error("Failed to delete LVM volume")
 		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to delete LVM volume %s: %w", volumeName, err)

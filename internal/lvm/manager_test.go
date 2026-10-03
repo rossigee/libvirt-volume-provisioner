@@ -129,11 +129,13 @@ func TestDeleteVolume(t *testing.T) {
 		vgName: "testvg",
 	}
 
-	// Test deleting a volume that doesn't exist (should not panic)
+	// Deleting a volume that doesn't exist is a success, not an error. A rollback
+	// exists to leave the volume absent; an already-absent volume meets that goal,
+	// and reporting an error made callers log "rollback failed" for volumes that
+	// had in fact been reclaimed.
 	assert.NotPanics(t, func() {
 		err := manager.DeleteVolume(context.Background(), "nonexistent-volume")
-		// We expect this to fail in a real environment, but shouldn't panic
-		assert.Error(t, err)
+		assert.NoError(t, err)
 	})
 }
 
