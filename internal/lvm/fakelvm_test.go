@@ -140,8 +140,10 @@ func toolOnlyPath(t *testing.T, tools ...string) string {
 }
 
 // activeLV is a VolumeInfo line as `lvs --units b -o lv_name,lv_size,lv_attr` emits it.
-func activeLV(name string, sizeBytes int64) string {
-	return fmt.Sprintf("%s %dB owi-a-----\n", name, sizeBytes)
+const testLVName = "runner-v4"
+
+func activeLV(sizeBytes int64) string {
+	return fmt.Sprintf("%s %dB owi-a-----\n", testLVName, sizeBytes)
 }
 
 func fakeLVMCfg(vg string) config.LVMConfig {
@@ -156,7 +158,7 @@ func fakeLVMCfg(vg string) config.LVMConfig {
 
 func TestGetVolumeInfo_ParsesLvsOutput(t *testing.T) {
 	f := newFakeLVM()
-	f.on("lvs", fakeResp{stdout: activeLV("runner-v4", 10737418240)})
+	f.on("lvs", fakeResp{stdout: activeLV(10737418240)})
 	f.install(t)
 
 	m := &Manager{vgName: "vg0"}
@@ -224,7 +226,7 @@ func TestValidateExistingVolume_SizeTolerance(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeLVM()
-			f.on("lvs", fakeResp{stdout: activeLV("runner-v4", tc.sizeBytes)})
+			f.on("lvs", fakeResp{stdout: activeLV(tc.sizeBytes)})
 			f.install(t)
 
 			m := &Manager{vgName: "vg0"}
@@ -312,6 +314,90 @@ func TestValidateDeviceBeforeConversion_LvdisplayFailureStopsEarly(t *testing.T)
 
 	// Nothing beyond the existence check should have run.
 	require.Empty(t, f.callsTo("lvs"))
+}
+
+// os.ModeDevice is set on character devices too, so checking it alone let
+// /dev/null and /dev/zero through as if they were provisioned volumes.
+func TestValidateDeviceBeforeConversion_RejectsCharacterDevice(t *testing.T) {
+	for _, devicePath := range []string{"/dev/null", "/dev/zero", "/dev/full"} {
+		t.Run(devicePath, func(t *testing.T) {
+			f := newFakeLVM()
+			f.on("lvs", fakeResp{stdout: activeLV(10737418240)})
+			f.install(t)
+
+			fi, statErr := os.Stat(devicePath)
+			require.NoError(t, statErr)
+			require.NotZero(t, fi.Mode()&os.ModeDevice,
+				"precondition: a char device still has ModeDevice set")
+			require.NotZero(t, fi.Mode()&os.ModeCharDevice)
+
+			m := &Manager{vgName: "vg0"}
+			err := m.validateDeviceBeforeConversion(context.Background(), devicePath, "runner-v4")
+			require.Error(t, err, "%s is a character device and must be refused", devicePath)
+			require.Contains(t, err.Error(), "is not a block device")
+
+			// The conversion must not be attempted.
+			require.Empty(t, f.callsTo("blockdev"))
+		})
+	}
+}
+
+// A regular file is not a device at all and was already rejected; keep that
+// covered alongside the character-device case.
+func TestValidateDeviceBeforeConversion_RejectsRegularFile(t *testing.T) {
+	f := newFakeLVM()
+	f.on("lvs", fakeResp{stdout: activeLV(10737418240)})
+	f.install(t)
+
+	regularFile := filepath.Join(t.TempDir(), "not-a-device")
+	require.NoError(t, os.WriteFile(regularFile, nil, 0o600))
+
+	m := &Manager{vgName: "vg0"}
+	err := m.validateDeviceBeforeConversion(context.Background(), regularFile, "runner-v4")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "is not a block device")
+}
+
+// The happy path needs a real block device, which needs root or a loopback
+// device, so it is exercised only when one is available.
+func TestValidateDeviceBeforeConversion_AcceptsBlockDevice(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to create a loopback block device")
+	}
+
+	blockDev, err := makeLoopDevice(t)
+	if err != nil {
+		t.Skip("no loop device available:", err)
+	}
+	t.Cleanup(func() { _ = detachLoopDevice(blockDev) })
+
+	f := newFakeLVM()
+	f.on("lvs", fakeResp{stdout: activeLV(10737418240)})
+	f.on("blockdev", fakeResp{stdout: "10737418240\n"})
+	f.install(t)
+
+	m := &Manager{vgName: "vg0"}
+	require.NoError(t, m.validateDeviceBeforeConversion(context.Background(), blockDev, "runner-v4"))
+}
+
+func makeLoopDevice(t *testing.T) (string, error) {
+	t.Helper()
+
+	backing := filepath.Join(t.TempDir(), "backing.img")
+	f, err := os.Create(backing)
+	require.NoError(t, err)
+	require.NoError(t, f.Truncate(8*1024*1024))
+	require.NoError(t, f.Close())
+
+	out, err := exec.Command("losetup", "--find", "--show", backing).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func detachLoopDevice(dev string) error {
+	return exec.Command("losetup", "--detach", dev).Run()
 }
 
 // -- createVolumeOnce ----------------------------------------------------
