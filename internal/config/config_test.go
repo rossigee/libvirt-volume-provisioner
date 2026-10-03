@@ -42,7 +42,7 @@ func TestDefaults(t *testing.T) {
 	assert.Equal(t, "qemu:///system", cfg.Libvirt.URI)
 	assert.Equal(t, "images", cfg.Libvirt.Pool)
 	assert.Equal(t, 2, cfg.Libvirt.MaxConcurrent)
-	assert.Equal(t, 30, cfg.Libvirt.JobTimeoutMinutes)
+	assert.Equal(t, 180, cfg.Libvirt.JobTimeoutMinutes)
 
 	assert.Equal(t, "vg0", cfg.LVM.VolumeGroup)
 	assert.Equal(t, 2, cfg.LVM.RetryAttempts)

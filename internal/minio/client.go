@@ -212,22 +212,79 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 		}
 	}
 
-	// Create or truncate destination file
-	destFile, err := os.Create(destPath) // #nosec G304 -- path comes from AllocateImageFile
+	// Resume rather than restart.
+	//
+	// A retry used to truncate the destination and pull the whole object again,
+	// so a download that ran past the job deadline never made progress: it
+	// reached the same point, timed out, and started over. At the throughput
+	// seen between hypervisors a 6 GiB image needs longer than the default job
+	// timeout, which made that the common case rather than the exception.
+	//
+	// The destination path is a per-image cache file, so anything already there
+	// for this exact object is a resumable prefix. A file at or beyond the
+	// object's size is not (a stale complete copy, or a different image that
+	// hashed to the same name) and is discarded.
+	startOffset := int64(0)
+	if fi, statErr := os.Stat(destPath); statErr == nil {
+		switch {
+		case fi.Size() == totalSize:
+			logrus.WithField("path", destPath).Info("Image already fully downloaded, skipping transfer")
+			if updater != nil {
+				updater.UpdateProgress("downloading", 100, totalSize, totalSize)
+			}
+			return nil
+		case fi.Size() < totalSize:
+			startOffset = fi.Size()
+			logrus.WithFields(logrus.Fields{
+				"path":   destPath,
+				"have":   startOffset,
+				"total":  totalSize,
+				"resume": startOffset / totalSize * 100,
+			}).Info("Resuming partial image download")
+		default:
+			logrus.WithFields(logrus.Fields{
+				"path":  destPath,
+				"size":  fi.Size(),
+				"total": totalSize,
+			}).Warn("Cached file is larger than the object; discarding and downloading again")
+			_ = os.Remove(destPath)
+		}
+	}
+
+	// Open for append at the resume point instead of truncating.
+	// #nosec G304 -- path comes from AllocateImageFile
+	destFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
-		return fmt.Errorf("failed to create destination file: %w", err)
+		return fmt.Errorf("failed to open destination file: %w", err)
 	}
 	defer func() {
 		_ = destFile.Close() // Close errors are not critical
 	}()
 
-	// Report starting download
-	if updater != nil {
-		updater.UpdateProgress("downloading", 0, 0, totalSize)
+	if startOffset > 0 {
+		if _, err := destFile.Seek(startOffset, io.SeekStart); err != nil {
+			return fmt.Errorf("failed to seek to resume offset %d: %w", startOffset, err)
+		}
 	}
 
-	// Download object with progress tracking
-	object, err := c.minioClient.GetObject(ctx, bucketName, objectName, minio.GetObjectOptions{})
+	// Report starting download, from wherever the prefix ended
+	if updater != nil {
+		if startOffset > 0 {
+			updater.UpdateProgress("downloading", float64(startOffset)/float64(totalSize)*100, startOffset, totalSize)
+		} else {
+			updater.UpdateProgress("downloading", 0, 0, totalSize)
+		}
+	}
+
+	// Download object with progress tracking, requesting only the remaining
+	// range so a resume does not re-transfer what is already on disk.
+	getOpts := minio.GetObjectOptions{}
+	if startOffset > 0 {
+		if err := getOpts.SetRange(startOffset, totalSize-1); err != nil {
+			return fmt.Errorf("failed to set resume range %d-%d: %w", startOffset, totalSize-1, err)
+		}
+	}
+	object, err := c.minioClient.GetObject(ctx, bucketName, objectName, getOpts)
 	if err != nil {
 		return fmt.Errorf("failed to get object: %w", err)
 	}
@@ -237,7 +294,7 @@ func (c *Client) downloadImageToPathOnce(ctx context.Context, imageURL, destPath
 
 	// Copy with progress tracking
 	buffer := make([]byte, 4*1024*1024) // 4MB buffer for more frequent updates
-	var downloaded int64
+	var downloaded = startOffset
 	lastUpdate := time.Now()
 	lastPercent := 0.0
 	bytesSinceUpdate := int64(0)

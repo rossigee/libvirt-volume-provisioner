@@ -112,7 +112,7 @@ func defaults() Config {
 			URI:               "qemu:///system",
 			Pool:              "images",
 			MaxConcurrent:     2,
-			JobTimeoutMinutes: 30,
+			JobTimeoutMinutes: 180,
 		},
 		LVM: LVMConfig{
 			VolumeGroup:    "vg0",
