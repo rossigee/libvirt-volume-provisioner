@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Go toolchain**: Updated to 1.27.1 across `go.mod`, the `golang:1.27.1-alpine` builder images in
+  `Dockerfile`, `Dockerfile.test` and `Dockerfile.production`, and the `GO_VERSION` env var in the
+  `ci.yml` and `release.yml` workflows. Build prerequisites in `DEPLOYMENT.md`, `docs/development.md`
+  and `docs/deployment.md` updated to match.
+- **golangci-lint**: Updated from v2.12.1 to v2.14.0 in `ci.yml`, and `golangci-lint-action` bumped
+  from v7 to v9. The existing `.golangci.yml` (v2 schema) verifies clean against v2.14.0 with no
+  configuration changes required.
+
 ### Fixed
+- **Integration test suite did not compile**: The `integration` package failed to build under the
+  `integration` build tag, so `go test -c -tags=integration ./integration/...` (the compile step in
+  `Dockerfile.test`) could not produce a test binary. Root cause: stale imports — `chaos_test.go` used
+  `os.Getenv` without importing `os` and imported an unused `context`; `integration_test.go` imported
+  unused `io` and `path/filepath`. `make test` and `make lint` did not catch this because neither sets
+  the build tag. Imports corrected; the tagged build now vets clean and compiles with `-race`.
 - **CRITICAL: Memory leak in job cleanup**: Job history was kept unbounded in memory, causing provisioner to
   exhaust 8GB MemoryMax limit and be killed by kernel OOM killer every 60-90 minutes in production. Root cause:
   `CleanupCompletedJobs()` only deleted jobs when count *exceeded* 100, not when count *reached* 100, allowing
