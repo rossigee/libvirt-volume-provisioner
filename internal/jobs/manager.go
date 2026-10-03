@@ -33,18 +33,18 @@ import (
 
 // Job represents a volume provisioning job.
 type Job struct {
-	mu             sync.RWMutex // protects all fields below
-	ID             string
-	CorrelationID  string
-	Status         types.JobStatus
-	Request        types.ProvisionRequest
-	Progress       *types.ProgressInfo
-	Error          error
-	CacheHit       bool
-	ImagePath      string
-	ImageURL       string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	mu            sync.RWMutex // protects all fields below
+	ID            string
+	CorrelationID string
+	Status        types.JobStatus
+	Request       types.ProvisionRequest
+	Progress      *types.ProgressInfo
+	Error         error
+	CacheHit      bool
+	ImagePath     string
+	ImageURL      string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 	// LeakedVolume names a volume that provisioning created and could not remove
 	// during rollback. Non-empty means the host is carrying a volume nothing owns,
 	// which is what filled the volume groups during the runner churn. It is
