@@ -281,19 +281,18 @@ docker run -d \
 
 ### Debian Repository Setup
 
-Packages are automatically deployed to B2-backed Debian repository at `https://debs.golder.tech`.
+Packages are automatically deployed to the Golder Tech Debian repository at
+`https://debs.golder.tech` when a version tag is pushed.
 
 #### For Repository Maintainers:
 
 Configure GitHub Secrets:
-- `B2_KEY_ID`: B2 application key ID
-- `B2_APPLICATION_KEY`: B2 application key
-- `GPG_PRIVATE_KEY`: GPG private key (export with `gpg --export-secret-keys --armor <key-id>`)
+- `DEBIAN_REPO_CI_TOKEN`: CI bearer token for the debian-repo instance
 
-The repository requires:
-- B2 bucket: configured via `B2_BUCKET` environment variable
-- Structure: `dists/` and `pool/` directories
-- GPG signature verification enabled
+Tagging a release runs `.github/workflows/release.yml`, whose `publish` job
+downloads the per-architecture `.deb` artifacts and uploads them with
+`rossigee/debian-repo-upload-action@v1` to the `stable` suite, `main` component.
+Both `amd64` and `arm64` packages are published.
 
 #### For Users:
 
