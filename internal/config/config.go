@@ -71,6 +71,14 @@ type CacheConfig struct {
 	// 40GB RAM disk, so the cache grew until new downloads failed with
 	// "insufficient disk space". A size bound is what actually constrains a cache
 	// living on a space-constrained filesystem.
+	//
+	// The bound has to leave room for the downloads themselves. The pool
+	// directory is not only a cache: an in-flight provisioning writes its image
+	// there too, so with max_concurrent jobs the tmpfs has to carry the cache plus
+	// one image per concurrent job at the same time. Observed on itx-001 with a
+	// 40GB tmpfs: three cached images totalled 19.8GB, a fourth download needed
+	// 6.88GB with buffer, and 2.24GB was reported available. A cap at or above
+	// that cache size evicts nothing and the next download still fails.
 	MaxSizeBytes int64 `yaml:"max_size_bytes"`
 }
 
@@ -123,9 +131,13 @@ func defaults() Config {
 			MaxAge:           "168h",
 			EvictionInterval: "1h",
 			// The pool directory is devtmpfs on these hosts, so the cache competes
-			// with everything else for RAM. 20GB leaves headroom on a 40GB tmpfs
-			// while still holding several images for reuse.
-			MaxSizeBytes: 20 * 1024 * 1024 * 1024,
+			// with in-flight downloads for the same RAM: each concurrent job
+			// (max_concurrent: 2) needs roughly 7GB there while it runs. 8GB holds
+			// the one image the steady state reuses and leaves a 40GB tmpfs room
+			// for two of those at once. A larger cap evicts too late to help --
+			// on a 40GB tmpfs anything above ~12GB is already too big to leave
+			// room for the downloads it is supposed to make possible.
+			MaxSizeBytes: 8 * 1024 * 1024 * 1024,
 		},
 		Logging: LoggingConfig{
 			Level:  "info",
