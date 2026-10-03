@@ -133,7 +133,7 @@ After pushing, confirm:
 - [ ] Docker image published to GHCR (`ghcr.io/rossigee/libvirt-volume-provisioner:vX.Y.Z`)
 - [ ] GitHub Release created at https://github.com/rossigee/libvirt-volume-provisioner/releases
 - [ ] Release assets include the `.deb` package
-- [ ] Debian apt repository updated (B2-backed)
+- [ ] Debian apt repository updated — both `amd64` and `arm64` published to `debs.golder.tech` (`stable`/`main`)
 
 ---
 
@@ -142,9 +142,12 @@ After pushing, confirm:
 | Secret | Purpose |
 |---|---|
 | `GITHUB_TOKEN` | Auto-provided by GitHub |
-| `B2_KEY_ID` | B2 bucket key for Debian repo upload |
-| `B2_APPLICATION_KEY` | B2 bucket secret |
-| `GPG_PRIVATE_KEY` | Signs the Debian repository |
+| `DEBIAN_REPO_CI_TOKEN` | Bearer token for uploading `.deb` packages to the debian-repo instance |
+
+The token needs `upload` rights on `stable`/`main`. It is a CI bearer token held in the
+debian-repo stack config (`platform-config/docker-stacks/vault.golder.lan/debian-repo/.env`,
+variable `CI_UPLOAD_TOKEN`); do not use the `repo-admin` token, which grants broader
+`reconcile`/`unprotect` rights than publishing needs.
 
 ---
 
@@ -163,7 +166,8 @@ git revert HEAD
 git push origin master
 ```
 
-Remove the `.deb` from the B2 Debian repository manually if it was already published.
+Remove the `.deb` from `debs.golder.tech` manually if it was already published — the CI token
+grants `remove`, so this can also be done through the debian-repo API.
 
 ---
 

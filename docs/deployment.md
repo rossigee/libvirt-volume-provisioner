@@ -74,11 +74,11 @@ git push origin v0.3.0
 
 When a tag is created, GitHub Actions automatically:
 
-1. **Build Debian Package**: Creates `.deb` for Ubuntu/Debian
-2. **Build Docker Image**: Pushes to `ghcr.io/rossigee/libvirt-volume-provisioner:v0.3.0`
-3. **Update Debian Repository**: Uploads `.deb` to B2-backed repository
-4. **Create GitHub Release**: Creates release with `.deb` as asset
-5. **Generate Changelog**: Auto-generates changelog from commit messages
+1. **Build Debian Package**: Creates `.deb` for `amd64` and `arm64`
+2. **Build Docker Image**: Pushes to `ghcr.io/rossigee/libvirt-volume-provisioner:vX.Y.Z`
+3. **Update Debian Repository**: Uploads both `.deb` packages to `debs.golder.tech` (`stable`/`main`)
+4. **Create GitHub Release**: Creates release with `.deb` assets
+5. **Generate Changelog**: Extracts the release notes from the matching `CHANGELOG.md` section
 
 ### Release Checklist
 
