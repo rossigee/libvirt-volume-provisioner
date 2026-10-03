@@ -119,22 +119,26 @@ func (f *fakeLVM) install(t *testing.T) {
 	}
 }
 
-// toolOnlyPath builds a PATH containing only sh plus the named tools, so
-// exec.LookPath can be made to fail for a specific binary. sh must remain
-// reachable because the fake runs through it.
-func toolOnlyPath(t *testing.T, tools ...string) string {
+// stubToolPath builds a PATH containing only sh plus stub executables for the
+// named tools, so exec.LookPath can be made to succeed or fail for a specific
+// binary regardless of what the host actually has installed.
+//
+// sh must stay reachable because the fake runs through it. The stubs are empty
+// files with the exec bit set: NewManager only LookPath's lvcreate and qemu-img,
+// it never executes them, so their contents do not matter. This matters because
+// the CI runner installs libvirt-dev and pkg-config but not qemu-img, so a test
+// that assumed the real binary was present passed locally and failed there.
+func stubToolPath(t *testing.T, tools ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 
-	link := func(name string) {
-		src, err := exec.LookPath(name)
-		require.NoError(t, err, "%s must exist to build the fake PATH", name)
-		require.NoError(t, os.Symlink(src, filepath.Join(dir, name)))
-	}
+	sh, err := exec.LookPath("sh")
+	require.NoError(t, err)
+	require.NoError(t, os.Symlink(sh, filepath.Join(dir, "sh")))
 
-	link("sh")
 	for _, tool := range tools {
-		link(tool)
+		stub := filepath.Join(dir, tool)
+		require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o700))
 	}
 	return dir
 }
@@ -451,6 +455,10 @@ func TestNewManager_SuccessConvertsRetryBackoff(t *testing.T) {
 	f.on("vgs", fakeResp{})
 	f.install(t)
 
+	// Provide the tools NewManager insists on finding, so this does not depend
+	// on the host having libvirt and qemu-img installed.
+	t.Setenv("PATH", stubToolPath(t, "lvcreate", "qemu-img"))
+
 	m, err := NewManager(config.LVMConfig{
 		VolumeGroup:    "vg0",
 		RetryAttempts:  5,
@@ -469,6 +477,8 @@ func TestNewManager_VgsFailure(t *testing.T) {
 	f.fail("vgs", "failed to find volume group vg-nope")
 	f.install(t)
 
+	t.Setenv("PATH", stubToolPath(t, "lvcreate", "qemu-img"))
+
 	m, err := NewManager(fakeLVMCfg("vg-nope"))
 	require.Error(t, err)
 	require.Nil(t, m)
@@ -481,7 +491,7 @@ func TestNewManager_MissingLvcreate(t *testing.T) {
 	f.install(t)
 
 	// sh stays on the PATH because the fake runs through it; lvcreate does not.
-	t.Setenv("PATH", toolOnlyPath(t))
+	t.Setenv("PATH", stubToolPath(t))
 
 	m, err := NewManager(fakeLVMCfg("vg0"))
 	require.Error(t, err)
@@ -495,7 +505,7 @@ func TestNewManager_MissingQemuImg(t *testing.T) {
 	f.install(t)
 
 	// Keep lvcreate on the PATH but not qemu-img, to reach the second check.
-	t.Setenv("PATH", toolOnlyPath(t, "lvcreate"))
+	t.Setenv("PATH", stubToolPath(t, "lvcreate"))
 
 	m, err := NewManager(fakeLVMCfg("vg0"))
 	require.Error(t, err)
