@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Release documentation**: `RELEASE.md` and `docs/deployment.md` no longer describe the B2-backed
+  publishing flow. The required CI secret is now `DEBIAN_REPO_CI_TOKEN`; the B2 and GPG secrets those
+  documents listed are unused by this repository.
+
+### Removed
+- **`scripts/deploy-deb.sh`**: The manual Backblazeb2 + `mcli` publish flow is superseded by the release
+  workflow uploading to `debs.golder.tech` directly. The script was also broken — it hardcoded
+  `DEB_FILE="libvirt-volume-provisioner_0.1.0_amd64.deb"`, so running it as-is would have republished the
+  0.1.0 package. `scripts/setup-repo.sh` is retained; it is still the client-side apt source setup.
+
 ## [0.12.4] - 2026-10-03
 
 ### Changed
@@ -58,6 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configuration changes required.
 
 ## [0.12.1] - 2026-09-17
+
+> Never tagged or published. The AppArmor fix below shipped in the `v0.12.2` release; there is no
+> `v0.12.1` tag or GitHub Release. The section is retained because it records when the fix was made.
 
 ### Fixed
 - **AppArmor profile blocks LVM tools**: The shipped profile did not allow the provisioner's child
