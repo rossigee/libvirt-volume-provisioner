@@ -36,7 +36,10 @@ import (
 // Forcing LC_ALL=C on the child process makes the numeric output stable
 // regardless of the host's configured locale, and is how these tools are
 // intended to be scripted.
-func lvmCmd(ctx context.Context, name string, args ...string) *exec.Cmd {
+// It is a variable rather than a plain function so tests can substitute canned
+// LVM output; production behaviour, including the C locale, is the default
+// value below.
+var lvmCmd = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 	// #nosec G204 -- `name` is never caller-supplied. Every call site in this
 	// package passes a string literal for the tool ("vgs", "lvs", "lvcreate",
 	// "lvremove"); only the arguments are dynamic, and they are passed as
