@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-10-03
+
 ### Added
 - **Automated Debian repository publishing**: Tagging a release now uploads the built `.deb` packages to
   `https://debs.golder.tech` (`stable`/`main`) via `rossigee/debian-repo-upload-action@v1`, so
@@ -14,17 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merges the per-architecture artifacts into a flat `dist/packages/` so both `amd64` and `arm64` packages
   are published. Requires the `DEBIAN_REPO_CI_TOKEN` secret. This supersedes the manual
   `scripts/deploy-deb.sh` (Backblazeb2 + `mcli`) flow.
-
-### Changed
-- **Go toolchain**: Updated to 1.27.1 across `go.mod`, the `golang:1.27.1-alpine` builder images in
-  `Dockerfile`, `Dockerfile.test` and `Dockerfile.production`, and the `GO_VERSION` env var in the
-  `ci.yml` and `release.yml` workflows. Build prerequisites in `DEPLOYMENT.md`, `docs/development.md`
-  and `docs/deployment.md` updated to match.
-- **golangci-lint**: Updated from v2.12.1 to v2.14.0 in `ci.yml`, and `golangci-lint-action` bumped
-  from v7 to v9. The existing `.golangci.yml` (v2 schema) verifies clean against v2.14.0 with no
-  configuration changes required.
-- **Debian repository docs**: `docs/deployment.md` no longer describes the old B2/`mcli` publishing
-  requirements, which no longer apply now that CI publishes to the debian-repo instance.
 
 ### Fixed
 - **Integration test suite did not compile**: The `integration` package failed to build under the
@@ -48,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`blockdev --getsize64`). This prevents conversion attempts on missing/inactive volumes and catches device
   issues early with clear error messages. Added regression tests for LV creation→device validation→qemu-img
   conversion sequence to prevent ordering bugs.
+
+### Changed
+- **Go toolchain**: Updated to 1.27.1 across `go.mod`, the `golang:1.27.1-alpine` builder images in
+  `Dockerfile`, `Dockerfile.test` and `Dockerfile.production`, and the `GO_VERSION` env var in the
+  `ci.yml` and `release.yml` workflows. Build prerequisites in `DEPLOYMENT.md`, `docs/development.md`
+  and `docs/deployment.md` updated to match.
+- **golangci-lint**: Updated from v2.12.1 to v2.14.0 in `ci.yml`, and `golangci-lint-action` bumped
+  from v7 to v9. The existing `.golangci.yml` (v2 schema) verifies clean against v2.14.0 with no
+  configuration changes required.
 
 ## [0.12.1] - 2026-09-17
 
