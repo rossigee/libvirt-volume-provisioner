@@ -136,6 +136,7 @@ profile libvirt-volume-provisioner /usr/bin/libvirt-volume-provisioner flags=(at
   /usr/sbin/lvchange ixr,
   /usr/sbin/lvdisplay ixr,
   /usr/sbin/lvscan ixr,
+  /usr/sbin/blockdev ixr,
   /bin/dd ixr,
   /sbin/blkid ixr,
   /usr/bin/blkid ixr,
