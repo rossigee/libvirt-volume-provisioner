@@ -32,6 +32,7 @@ type JobManager interface {
 	ListCachedImages() ([]*libvirt.ImageCache, error)
 	FetchImageToCache(ctx context.Context, req types.FetchImageToCacheRequest) (string, error)
 	DeleteCachedImage(cacheKey string) error
+	DeleteVolume(ctx context.Context, volumeName string) error
 }
 
 // VolumeContentManager handles uploading content to libvirt storage volumes
@@ -125,6 +126,7 @@ func SetupRoutes(router *gin.Engine, handler *Handler, authMiddleware gin.Handle
 		api.GET("/cache/images", handler.ListCachedImages)
 		api.POST("/cache/fetch", handler.FetchImageToCache)
 		api.DELETE("/cache/images/:key", handler.DeleteCachedImage)
+		api.DELETE("/volumes/:volume_name", handler.DeleteVolume)
 	}
 
 	// Volume content upload (with auth) — for cloud-init ISO injection
@@ -340,6 +342,30 @@ func (h *Handler) DeleteCachedImage(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "deleted", "key": key})
+}
+
+// DeleteVolume handles requests to remove an LVM volume by name.
+//
+// The operator needs this to reclaim a volume whose owning Crossplane Volume CR
+// was never created -- see Manager.DeleteVolume for why that happens. Without it
+// such volumes are unreachable and accumulate until the volume group is full.
+//
+// Idempotent: a volume that is already absent returns 200 with deleted=false,
+// so the operator can retry safely.
+func (h *Handler) DeleteVolume(c *gin.Context) {
+	volumeName := c.Param("volume_name")
+	if volumeName == "" {
+		c.JSON(http.StatusBadRequest, types.ErrorResponse{
+			Error: "volume_name is required",
+			Code:  400,
+		})
+		return
+	}
+	if err := h.jobManager.DeleteVolume(c.Request.Context(), volumeName); err != nil {
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: err.Error(), Code: 500})
+		return
+	}
+	c.JSON(http.StatusOK, types.DeleteVolumeResponse{VolumeName: volumeName, Deleted: true})
 }
 
 // UploadVolumeContent handles direct content upload to a libvirt storage volume.
