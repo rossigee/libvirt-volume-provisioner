@@ -1,0 +1,15 @@
+# Example deployment target list for scripts/deploy-to-hosts.sh
+#
+# Copy this file to vm-hosts.conf and replace the placeholders with your own
+# hosts. vm-hosts.conf is gitignored and must never be committed: it records
+# real internal hostnames, which are not appropriate for a public repository.
+#
+# Format: one "<hostname> <ssh-user>" pair per line. Blank lines are skipped.
+# Lines that do not contain both fields are skipped with a warning.
+#
+# The script copies the .deb to /tmp on each host, installs it with dpkg, then
+# restarts the libvirt-volume-provisioner service. It needs passwordless sudo
+# for dpkg and systemctl on the target hosts.
+
+hypervisor-01.example.com provisioner
+hypervisor-02.example.com provisioner

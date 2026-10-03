@@ -17,6 +17,9 @@ go.work
 # Vendored dependencies - CI resolves modules with `go mod download`
 /vendor/
 
+# Local deployment target list - see vm-hosts.conf.example
+vm-hosts.conf
+
 # Build artifacts
 /bin/
 /dist/
