@@ -6,7 +6,7 @@ This guide covers building, testing, and contributing to the libvirt-volume-prov
 
 ### Prerequisites
 
-- Go 1.21 or higher
+- Go 1.27.1 or higher
 - Make
 - libvirt-dev headers
 - qemu-img
