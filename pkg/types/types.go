@@ -103,3 +103,13 @@ type FetchImageToCacheRequest struct {
 type FetchImageToCacheResponse struct {
 	JobID string `json:"job_id"`
 }
+
+// DeleteVolumeResponse represents the response to deleting an LVM volume.
+//
+// Deleted reports whether the volume was present. Deletion is idempotent, so a
+// false here means it was already gone, which is success from the caller's
+// point of view and must not be treated as an error.
+type DeleteVolumeResponse struct {
+	VolumeName string `json:"volume_name"`
+	Deleted    bool   `json:"deleted"`
+}

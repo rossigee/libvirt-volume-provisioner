@@ -64,6 +64,8 @@ func (m *MockJobManager) FetchImageToCache(ctx context.Context, req types.FetchI
 
 func (m *MockJobManager) DeleteCachedImage(_ string) error { return nil }
 
+func (m *MockJobManager) DeleteVolume(_ context.Context, _ string) error { return nil }
+
 type MockVolumeContentManager struct{}
 
 func (m *MockVolumeContentManager) UploadVolumeContent(_ string, _ string, _ io.Reader, _ int64) error {
@@ -349,6 +351,82 @@ type errorDeleteMockJobManager struct {
 
 func (m *errorDeleteMockJobManager) DeleteCachedImage(_ string) error {
 	return errors.New("simulated delete error")
+}
+
+// recordingDeleteVolumeMockJobManager captures the volume names the delete
+// endpoint is asked to remove.
+type recordingDeleteVolumeMockJobManager struct {
+	MockJobManager
+	deleted []string
+	err     error
+}
+
+func (m *recordingDeleteVolumeMockJobManager) DeleteVolume(_ context.Context, volumeName string) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.deleted = append(m.deleted, volumeName)
+	return nil
+}
+
+func TestDeleteVolume_Success(t *testing.T) {
+	mockManager := &recordingDeleteVolumeMockJobManager{}
+	handler := NewHandler(mockManager, &MockVolumeContentManager{}, nil, "test-version", 2)
+
+	router := gin.New()
+	authMiddleware := func(c *gin.Context) { c.Next() }
+	SetupRoutes(router, handler, authMiddleware)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete,
+		"/api/v1/volumes/runner-abc12.golder.lan-root", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "runner-abc12.golder.lan-root")
+	// The name must arrive unmangled. It carries dots and hyphens, and it is the
+	// exact string lvremove needs, so any re-encoding here would delete the
+	// wrong volume or nothing at all.
+	assert.Equal(t, []string{"runner-abc12.golder.lan-root"}, mockManager.deleted)
+}
+
+// A volume that is already gone must not be an error. The operator retries this
+// call from a finalizer, and treating "absent" as failure would wedge every VM
+// deletion whose volume was reclaimed by something else.
+func TestDeleteVolume_IdempotentWhenAbsent(t *testing.T) {
+	mockManager := &recordingDeleteVolumeMockJobManager{}
+	handler := NewHandler(mockManager, &MockVolumeContentManager{}, nil, "test-version", 2)
+
+	router := gin.New()
+	authMiddleware := func(c *gin.Context) { c.Next() }
+	SetupRoutes(router, handler, authMiddleware)
+
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete,
+			"/api/v1/volumes/runner-abc12.golder.lan-root", nil)
+		router.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code, "repeat %d must still succeed", i+1)
+	}
+}
+
+func TestDeleteVolume_ManagerError(t *testing.T) {
+	mockManager := &recordingDeleteVolumeMockJobManager{err: errors.New("volume is held by a running domain")}
+	handler := NewHandler(mockManager, &MockVolumeContentManager{}, nil, "test-version", 2)
+
+	router := gin.New()
+	authMiddleware := func(c *gin.Context) { c.Next() }
+	SetupRoutes(router, handler, authMiddleware)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete,
+		"/api/v1/volumes/runner-abc12.golder.lan-root", nil)
+	router.ServeHTTP(w, req)
+
+	// Must be 5xx, not 2xx: a finalizer relies on this to know the volume is
+	// still present and requeue rather than completing.
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "held by a running domain")
 }
 
 func TestFetchImageToCache_ValidRequest(t *testing.T) {
