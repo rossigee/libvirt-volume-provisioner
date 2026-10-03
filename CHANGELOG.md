@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-10-03
+
+### Changed
+- **Version numbering**: This release re-publishes the v0.12.2 code as v0.12.4. An unofficial 0.12.3 build was
+  distributed outside the release workflow — it was never tagged, never published as a GitHub Release, and
+  never appeared in `debs.golder.tech`. 0.12.3 is deliberately skipped so the official version sequence stays
+  unambiguous. There are no code changes between v0.12.2 and v0.12.4; only the version strings differ.
+
 ## [0.12.2] - 2026-10-03
 
 ### Added
