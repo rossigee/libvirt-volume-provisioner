@@ -45,6 +45,11 @@ type Job struct {
 	ImageURL       string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	// LeakedVolume names a volume that provisioning created and could not remove
+	// during rollback. Non-empty means the host is carrying a volume nothing owns,
+	// which is what filled the volume groups during the runner churn. It is
+	// surfaced so the leak is visible instead of being silently retried.
+	LeakedVolume   string
 	cancelFunc     context.CancelFunc
 	downloadWeight float64
 	convertWeight  float64
@@ -115,6 +120,7 @@ type LibvirtPool interface {
 	DeleteImage(imagePath string) error
 	ListCachedImages() ([]*libvirt.ImageCache, error)
 	EvictExpiredImages(maxAge time.Duration) (int, error)
+	EvictImages(maxAge time.Duration, maxSizeBytes int64) (int, error)
 }
 
 // MinioClient is the interface Manager uses to interact with MinIO.
@@ -140,7 +146,8 @@ type Manager struct {
 // NewManager creates a new job manager.
 func NewManager(minioClient MinioClient, lvmManager *lvm.Manager,
 	libvirtPool LibvirtPool, store *storage.Store, met *appmetrics.Metrics,
-	maxConcurrent int, jobTimeout, cacheMaxAge, cacheEvictionInterval time.Duration) *Manager {
+	maxConcurrent int, jobTimeout, cacheMaxAge, cacheEvictionInterval time.Duration,
+	cacheMaxSizeBytes int64) *Manager {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	mgr := &Manager{
 		minioClient: minioClient,
@@ -160,13 +167,13 @@ func NewManager(minioClient MinioClient, lvmManager *lvm.Manager,
 		met.UpdateDependencyStatus("storage", store != nil)
 	}
 	if libvirtPool != nil {
-		go mgr.runEvictionLoop(bgCtx, cacheMaxAge, cacheEvictionInterval)
+		go mgr.runEvictionLoop(bgCtx, cacheMaxAge, cacheEvictionInterval, cacheMaxSizeBytes)
 	}
 	go mgr.runCleanupLoop(bgCtx)
 	return mgr
 }
 
-func (m *Manager) runEvictionLoop(ctx context.Context, maxAge, interval time.Duration) {
+func (m *Manager) runEvictionLoop(ctx context.Context, maxAge, interval time.Duration, maxSizeBytes int64) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -174,7 +181,7 @@ func (m *Manager) runEvictionLoop(ctx context.Context, maxAge, interval time.Dur
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := m.libvirtPool.EvictExpiredImages(maxAge); err != nil {
+			if _, err := m.libvirtPool.EvictImages(maxAge, maxSizeBytes); err != nil {
 				logrus.WithError(err).Error("Cache eviction sweep failed")
 			}
 		}
@@ -564,8 +571,16 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 					"volume_name": req.VolumeName,
 				}).Error("Rollback failed: could not delete volume")
 
+				// The volume could not be reclaimed. Leaving the job retryable made
+				// this the livelock that filled the volume group: each attempt
+				// recreated the volume, failed, and could not remove it, forever.
+				// DeleteVolume now has bounded retries of its own, so a failure
+				// here means the volume is genuinely held. Fail the job terminally
+				// and record it, so the caller sees a distinct error and the leak
+				// is visible rather than silently retried.
 				job.mu.Lock()
 				job.Error = fmt.Errorf("provision failed + rollback failed: %w", deleteErr)
+				job.LeakedVolume = req.VolumeName
 				job.mu.Unlock()
 			}
 		}

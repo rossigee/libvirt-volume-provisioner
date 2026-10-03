@@ -49,6 +49,10 @@ func (m *mockLibvirtPool) ListCachedImages() ([]*libvirt.ImageCache, error) {
 	}
 	return []*libvirt.ImageCache{}, nil
 }
+func (m *mockLibvirtPool) EvictImages(_ time.Duration, _ int64) (int, error) {
+	return 0, nil
+}
+
 func (m *mockLibvirtPool) EvictExpiredImages(_ time.Duration) (int, error) {
 	return m.evictedCount, m.evictErr
 }
@@ -865,7 +869,7 @@ func TestRunEvictionLoop_ContextCancel(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		m.runEvictionLoop(ctx, time.Hour, time.Hour) // long interval — only ctx.Done() fires
+		m.runEvictionLoop(ctx, time.Hour, time.Hour, 0) // long interval — only ctx.Done() fires
 		close(done)
 	}()
 
@@ -902,7 +906,7 @@ func TestRunEvictionLoop_TickerFires(t *testing.T) {
 		libvirtPool: triggerPool,
 	}
 
-	go m.runEvictionLoop(ctx, time.Hour, 50*time.Millisecond)
+	go m.runEvictionLoop(ctx, time.Hour, 50*time.Millisecond, 0)
 
 	select {
 	case <-evictCalled:
@@ -935,7 +939,7 @@ func TestRunEvictionLoop_EvictError(t *testing.T) {
 		libvirtPool: triggerPool,
 	}
 
-	go m.runEvictionLoop(ctx, time.Hour, 50*time.Millisecond)
+	go m.runEvictionLoop(ctx, time.Hour, 50*time.Millisecond, 0)
 
 	select {
 	case <-evictCalled:
@@ -959,7 +963,7 @@ func TestNewManager_StartsEvictionLoop(t *testing.T) {
 		},
 	}
 
-	m := NewManager(nil, nil, pool, nil, nil, 2, 30*time.Minute, time.Hour, 50*time.Millisecond)
+	m := NewManager(nil, nil, pool, nil, nil, 2, 30*time.Minute, time.Hour, 50*time.Millisecond, 0)
 	defer m.Stop()
 
 	select {
@@ -972,7 +976,7 @@ func TestNewManager_StartsEvictionLoop(t *testing.T) {
 
 // TestNewManager_NilPool tests that NewManager does not start the eviction goroutine when pool is nil.
 func TestNewManager_NilPool(t *testing.T) {
-	m := NewManager(nil, nil, nil, nil, nil, 2, 30*time.Minute, 168*time.Hour, time.Hour)
+	m := NewManager(nil, nil, nil, nil, nil, 2, 30*time.Minute, 168*time.Hour, time.Hour, 0)
 	defer m.Stop()
 	assert.NotNil(t, m)
 	assert.NotNil(t, m.bgCancel)
@@ -984,7 +988,7 @@ func TestNewManager_SetsInitialDependencyMetrics(t *testing.T) {
 	met := appmetrics.NewMetrics()
 	pool := &mockLibvirtPool{}
 
-	m := NewManager(nil, nil, pool, nil, met, 2, 30*time.Minute, 168*time.Hour, time.Hour)
+	m := NewManager(nil, nil, pool, nil, met, 2, 30*time.Minute, 168*time.Hour, time.Hour, 0)
 	defer m.Stop()
 
 	// minio and storage are nil → 0; libvirt pool is non-nil → 1; lvm is nil → 0
@@ -1022,6 +1026,10 @@ func (c *callbackLibvirtPool) DeleteImage(_ string) error                       
 func (c *callbackLibvirtPool) ListCachedImages() ([]*libvirt.ImageCache, error) {
 	return nil, nil
 }
+func (c *callbackLibvirtPool) EvictImages(_ time.Duration, _ int64) (int, error) {
+	return c.onEvict()
+}
+
 func (c *callbackLibvirtPool) EvictExpiredImages(_ time.Duration) (int, error) {
 	return c.onEvict()
 }

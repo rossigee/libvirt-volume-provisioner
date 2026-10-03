@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +17,20 @@ import (
 	"github.com/rossigee/libvirt-volume-provisioner/internal/config"
 	"github.com/sirupsen/logrus"
 )
+
+// humanBytes renders a byte count for log messages.
+func humanBytes(n uint64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := uint64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
 
 // ImageCache represents a cached image in the libvirt storage pool
 type ImageCache struct {
@@ -442,13 +457,41 @@ func (pm *PoolManager) UploadVolumeContent(poolName, volumeName string, content 
 
 // EvictExpiredImages removes cached images whose .sha256 sidecar mtime is
 // older than maxAge. Individual delete failures are logged but non-fatal.
+//
+// When maxSizeBytes is greater than zero a second, size-based sweep runs after
+// the age sweep: entries are evicted least-recently-used first until the cache
+// fits within the bound. Age alone cannot bound a cache that lives in the pool
+// directory, because on these hypervisors that directory is inside the root
+// devtmpfs (RAM) and a week of multi-gigabyte images exceeds it.
 func (pm *PoolManager) EvictExpiredImages(maxAge time.Duration) (int, error) {
+	return pm.EvictImages(maxAge, 0)
+}
+
+// EvictImages applies the age sweep and, when maxSizeBytes > 0, a
+// least-recently-used size sweep. It returns the number of images evicted.
+func (pm *PoolManager) EvictImages(maxAge time.Duration, maxSizeBytes int64) (int, error) {
+	// Reclaim sidecar-less files first. A download that fails partway leaves the
+	// image file behind with no sidecar, so it never appears in ListCachedImages
+	// and would count against the size budget below while being invisible to it.
+	//
+	// The caller does delete the file when DownloadImageToPath returns an error,
+	// but not when a later stage aborts the job, and the cache path is under a
+	// tmpfs on these hypervisors, so every abandoned multi-GB file counts against
+	// RAM until someone removes it by hand. On itx-001/002/003 that accumulated
+	// into 30GB of orphans and then began failing new downloads with
+	// "insufficient disk space".
+	orphans, err := pm.evictSidecarlessImages()
+	if err != nil {
+		return 0, err
+	}
+
 	images, err := pm.ListCachedImages()
 	if err != nil {
-		return 0, fmt.Errorf("eviction: failed to list cached images: %w", err)
+		return orphans, fmt.Errorf("eviction: failed to list cached images: %w", err)
 	}
 	cutoff := time.Now().Add(-maxAge)
 	evicted := 0
+	removed := make(map[string]struct{}, len(images))
 	for _, img := range images {
 		if img.ModTime.Before(cutoff) {
 			logrus.WithFields(logrus.Fields{
@@ -462,31 +505,57 @@ func (pm *PoolManager) EvictExpiredImages(maxAge time.Duration) (int, error) {
 				continue
 			}
 			evicted++
+			removed[img.Path] = struct{}{}
 		}
 	}
-	// Evict image files that have no .sha256 sidecar.
-	//
-	// ListCachedImages only yields entries that have a sidecar, because the
-	// sidecar is what makes a cached image usable and it supplies the modtime
-	// used for expiry above. A download that fails partway leaves the image
-	// file behind with no sidecar, so it never appears in that list and the
-	// sweep above could never reclaim it. The caller does delete the file when
-	// DownloadImageToPath returns an error, but not when a later stage aborts
-	// the job, and the cache path is under a tmpfs on these hypervisors, so
-	// every abandoned multi-GB file counts against RAM until someone removes it
-	// by hand. On itx-001/002/003 that accumulated into 30GB of orphans and
-	// then began failing new downloads with "insufficient disk space".
-	//
-	// Treat a sidecar-less file as expired regardless of age: it cannot be a
-	// valid cache entry, so there is nothing worth keeping.
-	orphans, err := pm.evictSidecarlessImages()
-	if err != nil {
-		return evicted, err
-	}
 
-	logrus.WithFields(logrus.Fields{"evicted": evicted, "orphans_removed": orphans, "total": len(images)}).
-		Info("Cache eviction sweep completed")
-	return evicted, nil
+	// Size sweep. Age-based eviction is the wrong bound for a cache backed by
+	// RAM: images are re-downloaded as they are requested, so a fresh image can
+	// still push the total past the filesystem. Evict least-recently-used first
+	// so the images most likely to be reused survive.
+	if maxSizeBytes > 0 {
+		sized := make([]*ImageCache, 0, len(images))
+		var total uint64
+		for _, img := range images {
+			if _, gone := removed[img.Path]; gone {
+				continue
+			}
+			sized = append(sized, img)
+			total += img.Size
+		}
+		sort.Slice(sized, func(i, j int) bool { return sized[i].ModTime.Before(sized[j].ModTime) })
+
+		for _, img := range sized {
+			if total <= uint64(maxSizeBytes) {
+				break
+			}
+			logrus.WithFields(logrus.Fields{
+				"image_path":   img.Path,
+				"size":         humanBytes(img.Size),
+				"cache_total":  humanBytes(total),
+				"max_size":     humanBytes(uint64(maxSizeBytes)),
+				"age":          time.Since(img.ModTime).Round(time.Second),
+				"evict_reason": "cache_size_limit",
+			}).Info("Evicting least-recently-used cached image to stay under the size limit")
+			if err := pm.DeleteImage(img.Path); err != nil {
+				logrus.WithError(err).WithField("image_path", img.Path).
+					Error("Failed to evict image for size limit")
+				continue
+			}
+			evicted++
+			if img.Size <= total {
+				total -= img.Size
+			}
+		}
+	}
+	logrus.WithFields(logrus.Fields{
+		"evicted":         evicted,
+		"orphans_removed": orphans,
+		"total":           len(images),
+		"max_age":         maxAge.String(),
+		"max_size_bytes":  maxSizeBytes,
+	}).Info("Cache eviction sweep completed")
+	return evicted + orphans, nil
 }
 
 // evictSidecarlessImages removes image files in the cache that have no
