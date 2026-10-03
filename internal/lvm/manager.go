@@ -306,12 +306,18 @@ func (m *Manager) validateDeviceBeforeConversion(ctx context.Context, devicePath
 			info.Attributes[4], info.Attributes)
 	}
 
-	// 3. Verify the block device file actually exists and is a block device
+	// 3. Verify the block device file actually exists and is a block device.
+	//
+	// os.ModeDevice is set on character devices as well as block devices, so
+	// testing for it alone accepts /dev/null and /dev/zero - anything that would
+	// pass straight through to qemu-img as if it were a provisioned volume.
+	// os.ModeCharDevice is the bit that distinguishes the two, so both have to be
+	// checked for the test to mean what it says.
 	fi, err := os.Stat(devicePath)
 	if err != nil {
 		return fmt.Errorf("device path does not exist: %s: %w", devicePath, err)
 	}
-	if fi.Mode()&os.ModeDevice == 0 {
+	if fi.Mode()&os.ModeDevice == 0 || fi.Mode()&os.ModeCharDevice != 0 {
 		return fmt.Errorf("device path exists but is not a block device: %s (mode: %v)", devicePath, fi.Mode())
 	}
 

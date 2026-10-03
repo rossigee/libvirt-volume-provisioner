@@ -119,29 +119,35 @@ func (f *fakeLVM) install(t *testing.T) {
 	}
 }
 
-// toolOnlyPath builds a PATH containing only sh plus the named tools, so
-// exec.LookPath can be made to fail for a specific binary. sh must remain
-// reachable because the fake runs through it.
-func toolOnlyPath(t *testing.T, tools ...string) string {
+// stubToolPath builds a PATH containing only sh plus stub executables for the
+// named tools, so exec.LookPath can be made to succeed or fail for a specific
+// binary regardless of what the host actually has installed.
+//
+// sh must stay reachable because the fake runs through it. The stubs are empty
+// files with the exec bit set: NewManager only LookPath's lvcreate and qemu-img,
+// it never executes them, so their contents do not matter. This matters because
+// the CI runner installs libvirt-dev and pkg-config but not qemu-img, so a test
+// that assumed the real binary was present passed locally and failed there.
+func stubToolPath(t *testing.T, tools ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 
-	link := func(name string) {
-		src, err := exec.LookPath(name)
-		require.NoError(t, err, "%s must exist to build the fake PATH", name)
-		require.NoError(t, os.Symlink(src, filepath.Join(dir, name)))
-	}
+	sh, err := exec.LookPath("sh")
+	require.NoError(t, err)
+	require.NoError(t, os.Symlink(sh, filepath.Join(dir, "sh")))
 
-	link("sh")
 	for _, tool := range tools {
-		link(tool)
+		stub := filepath.Join(dir, tool)
+		require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o700))
 	}
 	return dir
 }
 
 // activeLV is a VolumeInfo line as `lvs --units b -o lv_name,lv_size,lv_attr` emits it.
-func activeLV(name string, sizeBytes int64) string {
-	return fmt.Sprintf("%s %dB owi-a-----\n", name, sizeBytes)
+const testLVName = "runner-v4"
+
+func activeLV(sizeBytes int64) string {
+	return fmt.Sprintf("%s %dB owi-a-----\n", testLVName, sizeBytes)
 }
 
 func fakeLVMCfg(vg string) config.LVMConfig {
@@ -156,7 +162,7 @@ func fakeLVMCfg(vg string) config.LVMConfig {
 
 func TestGetVolumeInfo_ParsesLvsOutput(t *testing.T) {
 	f := newFakeLVM()
-	f.on("lvs", fakeResp{stdout: activeLV("runner-v4", 10737418240)})
+	f.on("lvs", fakeResp{stdout: activeLV(10737418240)})
 	f.install(t)
 
 	m := &Manager{vgName: "vg0"}
@@ -224,7 +230,7 @@ func TestValidateExistingVolume_SizeTolerance(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeLVM()
-			f.on("lvs", fakeResp{stdout: activeLV("runner-v4", tc.sizeBytes)})
+			f.on("lvs", fakeResp{stdout: activeLV(tc.sizeBytes)})
 			f.install(t)
 
 			m := &Manager{vgName: "vg0"}
@@ -314,6 +320,90 @@ func TestValidateDeviceBeforeConversion_LvdisplayFailureStopsEarly(t *testing.T)
 	require.Empty(t, f.callsTo("lvs"))
 }
 
+// os.ModeDevice is set on character devices too, so checking it alone let
+// /dev/null and /dev/zero through as if they were provisioned volumes.
+func TestValidateDeviceBeforeConversion_RejectsCharacterDevice(t *testing.T) {
+	for _, devicePath := range []string{"/dev/null", "/dev/zero", "/dev/full"} {
+		t.Run(devicePath, func(t *testing.T) {
+			f := newFakeLVM()
+			f.on("lvs", fakeResp{stdout: activeLV(10737418240)})
+			f.install(t)
+
+			fi, statErr := os.Stat(devicePath)
+			require.NoError(t, statErr)
+			require.NotZero(t, fi.Mode()&os.ModeDevice,
+				"precondition: a char device still has ModeDevice set")
+			require.NotZero(t, fi.Mode()&os.ModeCharDevice)
+
+			m := &Manager{vgName: "vg0"}
+			err := m.validateDeviceBeforeConversion(context.Background(), devicePath, "runner-v4")
+			require.Error(t, err, "%s is a character device and must be refused", devicePath)
+			require.Contains(t, err.Error(), "is not a block device")
+
+			// The conversion must not be attempted.
+			require.Empty(t, f.callsTo("blockdev"))
+		})
+	}
+}
+
+// A regular file is not a device at all and was already rejected; keep that
+// covered alongside the character-device case.
+func TestValidateDeviceBeforeConversion_RejectsRegularFile(t *testing.T) {
+	f := newFakeLVM()
+	f.on("lvs", fakeResp{stdout: activeLV(10737418240)})
+	f.install(t)
+
+	regularFile := filepath.Join(t.TempDir(), "not-a-device")
+	require.NoError(t, os.WriteFile(regularFile, nil, 0o600))
+
+	m := &Manager{vgName: "vg0"}
+	err := m.validateDeviceBeforeConversion(context.Background(), regularFile, "runner-v4")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "is not a block device")
+}
+
+// The happy path needs a real block device, which needs root or a loopback
+// device, so it is exercised only when one is available.
+func TestValidateDeviceBeforeConversion_AcceptsBlockDevice(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to create a loopback block device")
+	}
+
+	blockDev, err := makeLoopDevice(t)
+	if err != nil {
+		t.Skip("no loop device available:", err)
+	}
+	t.Cleanup(func() { _ = detachLoopDevice(blockDev) })
+
+	f := newFakeLVM()
+	f.on("lvs", fakeResp{stdout: activeLV(10737418240)})
+	f.on("blockdev", fakeResp{stdout: "10737418240\n"})
+	f.install(t)
+
+	m := &Manager{vgName: "vg0"}
+	require.NoError(t, m.validateDeviceBeforeConversion(context.Background(), blockDev, "runner-v4"))
+}
+
+func makeLoopDevice(t *testing.T) (string, error) {
+	t.Helper()
+
+	backing := filepath.Join(t.TempDir(), "backing.img")
+	f, err := os.Create(backing)
+	require.NoError(t, err)
+	require.NoError(t, f.Truncate(8*1024*1024))
+	require.NoError(t, f.Close())
+
+	out, err := exec.Command("losetup", "--find", "--show", backing).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func detachLoopDevice(dev string) error {
+	return exec.Command("losetup", "--detach", dev).Run()
+}
+
 // -- createVolumeOnce ----------------------------------------------------
 
 func TestCreateVolumeOnce_InsufficientExtents(t *testing.T) {
@@ -365,6 +455,10 @@ func TestNewManager_SuccessConvertsRetryBackoff(t *testing.T) {
 	f.on("vgs", fakeResp{})
 	f.install(t)
 
+	// Provide the tools NewManager insists on finding, so this does not depend
+	// on the host having libvirt and qemu-img installed.
+	t.Setenv("PATH", stubToolPath(t, "lvcreate", "qemu-img"))
+
 	m, err := NewManager(config.LVMConfig{
 		VolumeGroup:    "vg0",
 		RetryAttempts:  5,
@@ -383,6 +477,8 @@ func TestNewManager_VgsFailure(t *testing.T) {
 	f.fail("vgs", "failed to find volume group vg-nope")
 	f.install(t)
 
+	t.Setenv("PATH", stubToolPath(t, "lvcreate", "qemu-img"))
+
 	m, err := NewManager(fakeLVMCfg("vg-nope"))
 	require.Error(t, err)
 	require.Nil(t, m)
@@ -395,7 +491,7 @@ func TestNewManager_MissingLvcreate(t *testing.T) {
 	f.install(t)
 
 	// sh stays on the PATH because the fake runs through it; lvcreate does not.
-	t.Setenv("PATH", toolOnlyPath(t))
+	t.Setenv("PATH", stubToolPath(t))
 
 	m, err := NewManager(fakeLVMCfg("vg0"))
 	require.Error(t, err)
@@ -409,7 +505,7 @@ func TestNewManager_MissingQemuImg(t *testing.T) {
 	f.install(t)
 
 	// Keep lvcreate on the PATH but not qemu-img, to reach the second check.
-	t.Setenv("PATH", toolOnlyPath(t, "lvcreate"))
+	t.Setenv("PATH", stubToolPath(t, "lvcreate"))
 
 	m, err := NewManager(fakeLVMCfg("vg0"))
 	require.Error(t, err)
