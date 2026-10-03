@@ -13,7 +13,7 @@ permissions:
   packages: read
 
 env:
-  GO_VERSION: '1.26.6'
+  GO_VERSION: '1.27.1'
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -59,9 +59,9 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y libvirt-dev pkg-config
 
     - name: Run golangci-lint
-      uses: golangci/golangci-lint-action@v7
+      uses: golangci/golangci-lint-action@v9
       with:
-        version: v2.12.1
+        version: v2.14.0
         args: --timeout=5m
 
   security:

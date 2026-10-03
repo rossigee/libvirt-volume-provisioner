@@ -20,7 +20,7 @@ This guide covers deploying the libvirt-volume-provisioner in both traditional s
 - **libvirt** installed and running
 - **LVM** configured with available volume group
 - **MinIO** or S3-compatible storage accessible
-- **Go 1.25+** (for building from source)
+- **Go 1.27.1+** (for building from source)
 
 ### Network Requirements
 
