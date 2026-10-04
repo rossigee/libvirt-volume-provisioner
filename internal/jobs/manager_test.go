@@ -28,11 +28,15 @@ type mockLibvirtPool struct {
 	evictedCount int
 	deletedPaths []string
 	cacheDir     string // if set, AllocateImageFile creates files here
+	allocateErr  error
 }
 
 //nolint:nilnil // matches real CheckCache "not found" semantic
 func (m *mockLibvirtPool) CheckCache(_ string) (*libvirt.ImageCache, error) { return nil, nil }
 func (m *mockLibvirtPool) AllocateImageFile(cacheKey string) (string, error) {
+	if m.allocateErr != nil {
+		return "", m.allocateErr
+	}
 	if m.cacheDir != "" {
 		return filepath.Join(m.cacheDir, cacheKey), nil
 	}
