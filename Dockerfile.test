@@ -31,9 +31,15 @@ RUN CGO_ENABLED=1 GOOS=linux go test -c -race -covermode=atomic \
     ./integration/...
 
 # Build the provisioner binary for integration tests
+# libvirt cannot be statically linked: it dlopen()s driver plugins at runtime, so
+# a -static binary cannot resolve them. Alpine's libvirt-dev ships only .so files
+# and no .a archives at all, so -extldflags "-static" fails at link time with
+# "cannot find -lvirt-lxc". Dockerfile.production builds dynamically for the same
+# reason. The runtime stage below installs libvirt-client to supply the shared
+# libraries.
 RUN CGO_ENABLED=1 GOOS=linux go build \
     -tags=integration \
-    -ldflags '-w -extldflags "-static"' \
+    -ldflags '-w' \
     -o provisioner \
     ./cmd/provisioner
 
