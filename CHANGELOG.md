@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`Dockerfile.test` could not build**: The provisioner binary was linked with `-extldflags "-static"`,
+  which fails on Alpine because `libvirt-dev` ships only shared objects and no static archives. The build
+  died at link time with `cannot find -lvirt-lxc` / `-lvirt-qemu` / `-lvirt`, so the integration test image
+  has never been produced. libvirt resolves driver plugins with `dlopen` at runtime and cannot be linked
+  statically at all — `Dockerfile.production` already documented this. The flag is dropped, matching the
+  production build; the runtime stage's `libvirt-client` supplies the shared libraries. Verified by building
+  the image: the binary now links dynamically against `libvirt-lxc.so.0`, `libvirt-qemu.so.0` and
+  `libvirt.so.0`, and `integration.test` executes.
+
 ### Changed
 - **Release documentation**: `RELEASE.md` and `docs/deployment.md` no longer describe the B2-backed
   publishing flow. The required CI secret is now `DEBIAN_REPO_CI_TOKEN`; the B2 and GPG secrets those
