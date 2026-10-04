@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.5] - 2026-10-04
+
 ### Fixed
+- **Character devices passed the pre-conversion check**: `validateDeviceBeforeConversion` verified the
+  device path with `fi.Mode()&os.ModeDevice`, but that bit is set on character devices as well as block
+  devices - only `os.ModeCharDevice` distinguishes them. `/dev/null`, `/dev/zero` and `/dev/full` all
+  satisfied a check whose error message claimed to reject anything "not a block device", and would have
+  been handed to `qemu-img` as if they were a provisioned logical volume. `os.ModeCharDevice` is now also
+  required to be unset.
+- **Partial image downloads restarted from zero**: `DownloadImageToPath` now resumes a partially
+  downloaded image instead of discarding it and starting over. The existing file's size becomes the resume
+  offset, the destination is opened for append at that offset instead of being truncated, and the S3 GET
+  carries a `Range` header so the bytes already on disk are not re-transferred. Progress reporting resumes
+  from the recovered offset rather than starting at 0%.
 - **`Dockerfile.test` could not build**: The provisioner binary was linked with `-extldflags "-static"`,
   which fails on Alpine because `libvirt-dev` ships only shared objects and no static archives. The build
   died at link time with `cannot find -lvirt-lxc` / `-lvirt-qemu` / `-lvirt`, so the integration test image
@@ -18,11 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `libvirt.so.0`, and `integration.test` executes.
 
 ### Changed
+- **`libvirt.job_timeout_minutes` default raised from 30 to 180**: a 6.5GB image at a slow transfer rate
+  could exceed 30 minutes and be abandoned part way through.
 - **Release documentation**: `RELEASE.md` and `docs/deployment.md` no longer describe the B2-backed
   publishing flow. The required CI secret is now `DEBIAN_REPO_CI_TOKEN`; the B2 and GPG secrets those
   documents listed are unused by this repository.
 
 ### Removed
+- **`scripts/update-repo.sh`**: Its only caller was `scripts/deploy-deb.sh`, and `debs.golder.tech` has
+  generated its own indices since CI started publishing through `debian-repo-upload-action`. Beyond being
+  dead it was wrong twice over - it hardcoded GPG key `20879EBE6582F6BF1506DE02DB5CF7EA238FE114`, and it
+  generated an amd64-only index while the live repository serves `arm64` as well.
 - **`scripts/deploy-deb.sh`**: The manual Backblazeb2 + `mcli` publish flow is superseded by the release
   workflow uploading to `debs.golder.tech` directly. The script was also broken — it hardcoded
   `DEB_FILE="libvirt-volume-provisioner_0.1.0_amd64.deb"`, so running it as-is would have republished the
