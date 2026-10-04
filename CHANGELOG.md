@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.6] - 2026-10-04
+
+### Fixed
+- **`cache.max_size_bytes` default of 20GB did not fit the tmpfs it lives on**: the libvirt pool directory on
+  these hypervisors is a directory inside the root devtmpfs, so the cache is RAM — and it is not only a
+  cache: an in-flight provisioning writes its image there too, so the tmpfs carries the cache plus one image
+  per concurrent job. The default was commented as "leaves headroom on a 40GB tmpfs" but did not. Observed
+  on itx-001 with a 40GB tmpfs and `max_concurrent: 2`: three cached images totalled 19.8GB, a fourth
+  download needed 6.88GB with buffer, and 2.24GB was reported available — "insufficient disk space". Because
+  19.8GB sits *under* a 20GB cap, the size sweep evicted nothing and the next download failed exactly as it
+  would have with no bound at all. The default is now 8GB, which holds the one image the steady state reuses
+  and leaves room for two concurrent downloads; anything above roughly 12GB is already too large on a 40GB
+  tmpfs. Operators who set `cache.max_size_bytes` explicitly are unaffected — only the default changed.
+
 ## [0.12.5] - 2026-10-04
 
 ### Fixed
