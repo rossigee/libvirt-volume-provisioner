@@ -129,11 +129,29 @@ type MinioClient interface {
 	DownloadImageToPath(ctx context.Context, imageURL, destPath string, updater minio.ProgressUpdater) error
 }
 
+// LVMManager is the interface Manager uses to provision and reclaim volumes.
+//
+// It is deliberately narrower than *lvm.Manager: only the three operations the
+// job lifecycle needs. Depending on the concrete type meant those three calls
+// could not be exercised without a real volume group, which left the create,
+// populate and rollback paths untested.
+type LVMManager interface {
+	CreateVolume(ctx context.Context, volumeName string, sizeGB int) error
+	PopulateVolume(
+		ctx context.Context,
+		imagePath, volumeName, imageType string,
+		updater lvm.ProgressUpdater,
+		store *storage.Store,
+		jobID string,
+	) error
+	DeleteVolume(ctx context.Context, volumeName string) error
+}
+
 // Manager manages volume provisioning jobs.
 type Manager struct {
 	minioClient MinioClient
 	jobs        map[string]*Job
-	lvmManager  *lvm.Manager
+	lvmManager  LVMManager
 	libvirtPool LibvirtPool
 	store       *storage.Store
 	metrics     *appmetrics.Metrics
@@ -144,7 +162,7 @@ type Manager struct {
 }
 
 // NewManager creates a new job manager.
-func NewManager(minioClient MinioClient, lvmManager *lvm.Manager,
+func NewManager(minioClient MinioClient, lvmManager LVMManager,
 	libvirtPool LibvirtPool, store *storage.Store, met *appmetrics.Metrics,
 	maxConcurrent int, jobTimeout, cacheMaxAge, cacheEvictionInterval time.Duration,
 	cacheMaxSizeBytes int64) *Manager {
