@@ -333,6 +333,87 @@ func TestGetActiveJobs(t *testing.T) {
 	assert.Equal(t, 3, activeCount)
 }
 
+// awaitJobStatus waits for a job to settle on one of the given statuses,
+// reading under the job lock, and returns the status and error it settled on.
+//
+// The managers these tests build have no dependencies wired up, and runJob and
+// runCacheJob both check for that before touching anything else, so the job
+// fails fast and deterministically. The tests used to assert StatusPending
+// instead, which is a transient value the goroutine races past: reading it
+// unlocked happened to win often enough to look stable, but it failed roughly
+// one run in ten once the reads were correctly locked.
+func awaitJobStatus(t *testing.T, job *Job, want ...types.JobStatus) (types.JobStatus, error) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		job.mu.RLock()
+		status, jobErr := job.Status, job.Error
+		job.mu.RUnlock()
+
+		for _, candidate := range want {
+			if status == candidate {
+				return status, jobErr
+			}
+		}
+
+		if time.Now().After(deadline) {
+			return status, jobErr
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// jobView is a point-in-time copy of a job's fields, taken under the job lock.
+type jobView struct {
+	id            string
+	correlationID string
+	status        types.JobStatus
+	request       types.ProvisionRequest
+	createdAt     time.Time
+	updatedAt     time.Time
+	hasCancelFunc bool
+}
+
+// viewJob snapshots a job under its own mutex.
+//
+// Job documents its mutex as protecting every field, and StartJob launches a
+// goroutine that mutates Status and UpdatedAt immediately. Reading those fields
+// directly from a test is a data race, which is why this goes through the lock.
+func viewJob(job *Job) jobView {
+	job.mu.RLock()
+	defer job.mu.RUnlock()
+
+	return jobView{
+		id:            job.ID,
+		correlationID: job.CorrelationID,
+		status:        job.Status,
+		request:       job.Request,
+		createdAt:     job.CreatedAt,
+		updatedAt:     job.UpdatedAt,
+		hasCancelFunc: job.cancelFunc != nil,
+	}
+}
+
+// lookupJob finds a job under the manager lock, since StartJob writes the map
+// from the caller's goroutine.
+func lookupJob(manager *Manager, jobID string) *Job {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.jobs[jobID]
+}
+
+// cancelJob invokes a job's cancel func, read under the job lock.
+func cancelJob(t *testing.T, job *Job) {
+	t.Helper()
+	job.mu.RLock()
+	cancel := job.cancelFunc
+	job.mu.RUnlock()
+
+	require.NotNil(t, cancel, "job must have a cancel func")
+	cancel()
+}
+
 // TestStartJob tests starting a new provisioning job
 func TestStartJob(t *testing.T) {
 	manager := &Manager{
@@ -352,21 +433,28 @@ func TestStartJob(t *testing.T) {
 
 	jobID, err := manager.StartJob(context.Background(), req)
 
-	assert.NoError(t, err)
-	assert.NotEmpty(t, jobID)
-	assert.Contains(t, manager.jobs, jobID)
+	require.NoError(t, err)
+	require.NotEmpty(t, jobID)
 
-	job := manager.jobs[jobID]
-	assert.Equal(t, jobID, job.ID)
-	assert.Equal(t, types.StatusPending, job.Status)
-	assert.Equal(t, req, job.Request)
-	assert.Equal(t, "test-correlation-id", job.CorrelationID)
-	assert.NotZero(t, job.CreatedAt)
-	assert.NotZero(t, job.UpdatedAt)
-	assert.NotNil(t, job.cancelFunc)
+	job := lookupJob(manager, jobID)
+	require.NotNil(t, job)
 
-	// Cancel the job immediately to prevent the goroutine from panicking due to nil dependencies
-	job.cancelFunc()
+	// The job goroutine starts immediately and mutates Status and UpdatedAt, so
+	// the fields must be read under the lock rather than asserted directly.
+	view := viewJob(job)
+	assert.Equal(t, jobID, view.id)
+	assert.Equal(t, req, view.request)
+	assert.Equal(t, "test-correlation-id", view.correlationID)
+	assert.NotZero(t, view.createdAt)
+	assert.NotZero(t, view.updatedAt)
+	assert.True(t, view.hasCancelFunc)
+
+	// No dependencies are wired up, so the job must fail fast rather than panic
+	// or hang. Asserting that also removes the need to guess which transient
+	// status the goroutine happened to be in when the assertions ran.
+	status, jobErr := awaitJobStatus(t, job, types.StatusFailed)
+	assert.Equal(t, types.StatusFailed, status)
+	assert.ErrorContains(t, jobErr, "dependencies not initialized")
 }
 
 // TestStartJob_MultipleJobs tests starting multiple jobs
@@ -394,11 +482,13 @@ func TestStartJob_MultipleJobs(t *testing.T) {
 	assert.NoError(t, err1)
 	assert.NoError(t, err2)
 	assert.NotEqual(t, jobID1, jobID2)
+	manager.mu.RLock()
 	assert.Len(t, manager.jobs, 2)
+	manager.mu.RUnlock()
 
 	// Cancel jobs immediately to prevent goroutine panics due to nil dependencies
-	manager.jobs[jobID1].cancelFunc()
-	manager.jobs[jobID2].cancelFunc()
+	cancelJob(t, lookupJob(manager, jobID1))
+	cancelJob(t, lookupJob(manager, jobID2))
 }
 
 // TestGetJobStatus tests retrieving job status
@@ -524,20 +614,24 @@ func TestFetchImageToCache(t *testing.T) {
 		ImageURL: "https://minio.example.com/images/cache-image.qcow2",
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately to prevent goroutine panics
-	jobID, err := manager.FetchImageToCache(ctx, req)
+	// FetchImageToCache detaches its own context, so the caller's is irrelevant.
+	jobID, err := manager.FetchImageToCache(context.Background(), req)
 
-	assert.NoError(t, err)
-	assert.NotEmpty(t, jobID)
-	assert.Contains(t, manager.jobs, jobID)
+	require.NoError(t, err)
+	require.NotEmpty(t, jobID)
 
-	job := manager.jobs[jobID]
-	assert.Equal(t, jobID, job.ID)
-	assert.Equal(t, types.StatusPending, job.Status)
-	assert.Equal(t, req.ImageURL, job.Request.ImageURL)
-	assert.NotZero(t, job.CreatedAt)
-	assert.NotZero(t, job.UpdatedAt)
+	job := lookupJob(manager, jobID)
+	require.NotNil(t, job)
+
+	view := viewJob(job)
+	assert.Equal(t, jobID, view.id)
+	assert.Equal(t, req.ImageURL, view.request.ImageURL)
+	assert.NotZero(t, view.createdAt)
+	assert.NotZero(t, view.updatedAt)
+
+	status, jobErr := awaitJobStatus(t, job, types.StatusFailed)
+	assert.Equal(t, types.StatusFailed, status)
+	assert.ErrorContains(t, jobErr, "dependencies not initialized")
 }
 
 // TestRecoverJobs tests the job recovery functionality
