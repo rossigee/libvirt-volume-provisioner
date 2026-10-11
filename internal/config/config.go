@@ -49,6 +49,10 @@ type LibvirtConfig struct {
 	Pool              string `yaml:"pool"`
 	MaxConcurrent     int    `yaml:"max_concurrent"`
 	JobTimeoutMinutes int    `yaml:"job_timeout_minutes"`
+	// CacheDir holds cached and in-flight images. It must be a real disk
+	// filesystem: it is not the pool's target path, which for a logical (LVM)
+	// pool is /dev/<vg> and sits on devtmpfs (RAM).
+	CacheDir string `yaml:"cache_dir"`
 }
 
 // LVMConfig holds LVM manager settings.
@@ -119,6 +123,7 @@ func defaults() Config {
 		Libvirt: LibvirtConfig{
 			URI:               "qemu:///system",
 			Pool:              "images",
+			CacheDir:          "/var/lib/libvirt-volume-provisioner/cache",
 			MaxConcurrent:     2,
 			JobTimeoutMinutes: 180,
 		},
