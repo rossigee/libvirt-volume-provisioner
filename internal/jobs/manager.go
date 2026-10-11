@@ -157,6 +157,8 @@ type Manager struct {
 	metrics     *appmetrics.Metrics
 	semaphore   chan struct{}
 	mu          sync.RWMutex
+	keyLocksMu  sync.Mutex
+	keyLocks    map[string]*sync.Mutex
 	bgCancel    context.CancelFunc
 	jobTimeout  time.Duration
 }
@@ -668,6 +670,25 @@ func parseChecksumFile(data []byte) (string, error) {
 }
 
 // getOrDownloadImage checks cache or downloads image and returns the path.
+// lockCacheKey serialises cache work for one image. Every job for the same image
+// uses the same cache file, so without this one job's cleanup can delete a file
+// another job is still downloading or verifying. The returned func releases the lock.
+func (m *Manager) lockCacheKey(cacheKey string) func() {
+	m.keyLocksMu.Lock()
+	if m.keyLocks == nil {
+		m.keyLocks = make(map[string]*sync.Mutex)
+	}
+	l, ok := m.keyLocks[cacheKey]
+	if !ok {
+		l = &sync.Mutex{}
+		m.keyLocks[cacheKey] = l
+	}
+	m.keyLocksMu.Unlock()
+
+	l.Lock()
+	return l.Unlock
+}
+
 func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionRequest, job *Job) (string, error) {
 	tracer := otel.Tracer("job-manager")
 
@@ -676,6 +697,8 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 	}
 
 	cacheKey := urlCacheKey(req.ImageURL)
+	unlockCache := m.lockCacheKey(cacheKey)
+	defer unlockCache()
 
 	checksumCtx, checksumSpan := tracer.Start(ctx, "getImageChecksum",
 		trace.WithAttributes(attribute.String("image.url", req.ImageURL)))
@@ -879,10 +902,13 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 	}).Info("Calculating checksum of downloaded image")
 	localChecksum, checksumErr := libvirt.CalculateChecksum(imagePath)
 	if checksumErr != nil {
-		logrus.WithError(checksumErr).Warn("Failed to calculate local checksum for downloaded image")
+		// Without a checksum the image cannot be verified or cached. Failing here
+		// keeps the job from reporting success for a file it could not read.
+		_ = m.libvirtPool.DeleteImage(imagePath)
+		return "", fmt.Errorf("failed to calculate checksum of downloaded image: %w", checksumErr)
 	}
 
-	if hasRemoteChecksum && checksumErr == nil {
+	if hasRemoteChecksum {
 		if localChecksum != remoteChecksum {
 			_ = m.libvirtPool.DeleteImage(imagePath)
 			return "", fmt.Errorf("downloaded image checksum mismatch: got %s, expected %s "+
@@ -894,7 +920,7 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 			"local_checksum":  localChecksum,
 			"remote_checksum": remoteChecksum,
 		}).Info("Downloaded image checksum verified against remote")
-	} else if !hasRemoteChecksum && checksumErr == nil {
+	} else {
 		logrus.WithFields(logrus.Fields{
 			"job_id":         job.ID,
 			"image_path":     imagePath,
@@ -902,10 +928,8 @@ func (m *Manager) getOrDownloadImage(ctx context.Context, req types.ProvisionReq
 		}).Warn("No remote checksum available — skipping verification")
 	}
 
-	if checksumErr == nil {
-		if err := m.libvirtPool.CreateCacheEntry(imagePath, localChecksum); err != nil {
-			logrus.WithError(err).Warn("Failed to create cache entry")
-		}
+	if err := m.libvirtPool.CreateCacheEntry(imagePath, localChecksum); err != nil {
+		logrus.WithError(err).Warn("Failed to create cache entry")
 	}
 
 	logrus.WithFields(logrus.Fields{
