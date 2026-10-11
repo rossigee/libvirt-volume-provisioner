@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -418,5 +419,18 @@ func TestDefaultCacheHoldsAtLeastOneImage(t *testing.T) {
 	if cfg.Cache.MaxSizeBytes < oneImage {
 		t.Errorf("default MaxSizeBytes = %d bytes cannot hold a single %d byte image, so the "+
 			"cache would never be reused", cfg.Cache.MaxSizeBytes, oneImage)
+	}
+}
+
+// The image cache must not default to a RAM-backed path. The libvirt pool's
+// target is /dev/<vg> for a logical pool, which is devtmpfs, so images written
+// there consume memory and count against the service's memory limit.
+func TestDefaults_CacheDirIsOnDiskNotDevtmpfs(t *testing.T) {
+	cfg := defaults()
+
+	assert.Equal(t, "/var/lib/libvirt-volume-provisioner/cache", cfg.Libvirt.CacheDir)
+	for _, ram := range []string{"/dev", "/tmp", "/run", "/dev/shm"} {
+		assert.False(t, strings.HasPrefix(cfg.Libvirt.CacheDir, ram+"/"),
+			"cache_dir %q must not be under RAM-backed %s", cfg.Libvirt.CacheDir, ram)
 	}
 }

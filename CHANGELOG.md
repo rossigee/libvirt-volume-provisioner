@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Image cache and in-flight downloads were written into the libvirt pool's target path** (`/dev/<vg>` for a
+  logical pool). `/dev` is devtmpfs, so every image was held in RAM and counted against the service's memory
+  limit; on itx-001 this reached 31GB and OOM-killed the provisioner mid-download. The cache now lives in
+  `libvirt.cache_dir` (default `/var/lib/libvirt-volume-provisioner/cache`, a disk filesystem). The pool keeps
+  its LVM target. Existing images in the old location are not scanned any more and must be removed by hand.
+
 ## [0.12.6] - 2026-10-04
 
 ### Fixed

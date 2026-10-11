@@ -50,7 +50,7 @@ func TestAllocateImageFile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			pm := &PoolManager{poolPath: tmpDir}
+			pm := &PoolManager{cachePath: tmpDir}
 
 			imagePath, err := pm.AllocateImageFile(tt.imageName)
 
@@ -72,7 +72,7 @@ func TestAllocateImageFileCreatesDirectory(t *testing.T) {
 	nonExistentPool := filepath.Join(tmpDir, "cache", "images")
 
 	pm := &PoolManager{
-		poolPath: nonExistentPool,
+		cachePath: nonExistentPool,
 	}
 
 	// Verify directory doesn't exist yet
@@ -94,7 +94,7 @@ func TestAllocateImageFileCreatesDirectory(t *testing.T) {
 func TestCheckCacheCacheHit(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := &PoolManager{
-		poolPath: tmpDir,
+		cachePath: tmpDir,
 	}
 
 	checksum := "abc123def456"
@@ -121,7 +121,7 @@ func TestCheckCacheCacheHit(t *testing.T) {
 // checksum, which broke stale-cache detection when the URL-hash key differs from the image hash.
 func TestCheckCache_ReturnsStoredChecksumContent(t *testing.T) {
 	tmpDir := t.TempDir()
-	pm := &PoolManager{poolPath: tmpDir}
+	pm := &PoolManager{cachePath: tmpDir}
 
 	cacheKey := "urlhash_stable_filename_key"
 	storedChecksum := "a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
@@ -143,7 +143,7 @@ func TestCheckCache_ReturnsStoredChecksumContent(t *testing.T) {
 func TestCheckCacheMiss(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := &PoolManager{
-		poolPath: tmpDir,
+		cachePath: tmpDir,
 	}
 
 	// Test cache miss - no checksum file exists
@@ -156,7 +156,7 @@ func TestCheckCacheMiss(t *testing.T) {
 func TestCheckCacheOrphanedChecksumFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := &PoolManager{
-		poolPath: tmpDir,
+		cachePath: tmpDir,
 	}
 
 	checksum := "orphaned_checksum"
@@ -176,7 +176,7 @@ func TestCheckCacheOrphanedChecksumFile(t *testing.T) {
 func TestCheckCacheImageFileSizeAccuracy(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := &PoolManager{
-		poolPath: tmpDir,
+		cachePath: tmpDir,
 	}
 
 	checksum := "size_test_checksum"
@@ -200,7 +200,7 @@ func TestCheckCacheCreatesMissingDirectory(t *testing.T) {
 	nonExistentPool := filepath.Join(tmpDir, "missing", "cache")
 
 	pm := &PoolManager{
-		poolPath: nonExistentPool,
+		cachePath: nonExistentPool,
 	}
 
 	// Should not error even if directory doesn't exist
@@ -218,7 +218,7 @@ func TestCheckCacheCreatesMissingDirectory(t *testing.T) {
 func TestCacheKeyConsistency(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := &PoolManager{
-		poolPath: tmpDir,
+		cachePath: tmpDir,
 	}
 
 	checksum := "a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
@@ -243,7 +243,7 @@ func TestCacheKeyConsistency(t *testing.T) {
 func TestCreateCacheEntry(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := &PoolManager{
-		poolPath: tmpDir,
+		cachePath: tmpDir,
 	}
 
 	imagePath := filepath.Join(tmpDir, "test_image")
@@ -268,7 +268,7 @@ func TestCreateCacheEntry(t *testing.T) {
 func TestDeleteImage(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := &PoolManager{
-		poolPath: tmpDir,
+		cachePath: tmpDir,
 	}
 
 	imagePath := filepath.Join(tmpDir, "test_image")
@@ -298,7 +298,7 @@ func TestDeleteImage(t *testing.T) {
 func TestDeleteImageNonExistent(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := &PoolManager{
-		poolPath: tmpDir,
+		cachePath: tmpDir,
 	}
 
 	imagePath := filepath.Join(tmpDir, "nonexistent_image")
@@ -340,7 +340,7 @@ func TestEvictExpiredImages_ListError(t *testing.T) {
 	notADir := filepath.Join(tmpDir, "notadir")
 	require.NoError(t, os.WriteFile(notADir, []byte("x"), 0o600))
 
-	pm := &PoolManager{poolPath: notADir}
+	pm := &PoolManager{cachePath: notADir}
 
 	_, err := pm.EvictExpiredImages(24 * time.Hour)
 	assert.Error(t, err)
@@ -350,7 +350,7 @@ func TestEvictExpiredImages_ListError(t *testing.T) {
 func TestEvictExpiredImages(t *testing.T) {
 	t.Run("evicts old entries, keeps new ones", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		pm := &PoolManager{poolPath: tmpDir}
+		pm := &PoolManager{cachePath: tmpDir}
 
 		oldKey := "oldcachedimage"
 		newKey := "newcachedimage"
@@ -378,7 +378,7 @@ func TestEvictExpiredImages(t *testing.T) {
 
 	t.Run("empty cache returns zero evictions", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		pm := &PoolManager{poolPath: tmpDir}
+		pm := &PoolManager{cachePath: tmpDir}
 
 		evicted, err := pm.EvictExpiredImages(24 * time.Hour)
 		assert.NoError(t, err)
@@ -393,7 +393,7 @@ func TestEvictExpiredImages(t *testing.T) {
 	// these use full 64-char hex keys.
 	t.Run("removes partial images that have no checksum sidecar", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		pm := &PoolManager{poolPath: tmpDir}
+		pm := &PoolManager{cachePath: tmpDir}
 
 		partialKey := strings.Repeat("a", 64)  // abandoned partial download
 		completeKey := strings.Repeat("b", 64) // finished download, has sidecar
@@ -427,7 +427,7 @@ func TestEvictExpiredImages(t *testing.T) {
 
 	t.Run("leaves files that are not cache keys alone", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		pm := &PoolManager{poolPath: tmpDir}
+		pm := &PoolManager{cachePath: tmpDir}
 
 		// Not 64 hex characters, so it is not an image file this code created.
 		strangerPath := filepath.Join(tmpDir, "not-a-cache-key")
@@ -442,7 +442,7 @@ func TestEvictExpiredImages(t *testing.T) {
 
 	t.Run("no entries old enough leaves cache unchanged", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		pm := &PoolManager{poolPath: tmpDir}
+		pm := &PoolManager{cachePath: tmpDir}
 
 		key := "recentimage"
 		imgPath := filepath.Join(tmpDir, key)
@@ -464,7 +464,7 @@ func TestEvictExpiredImages(t *testing.T) {
 // entries until the cache fits.
 func TestEvictImages_SizeLimit(t *testing.T) {
 	tmpDir := t.TempDir()
-	pm := &PoolManager{poolPath: tmpDir}
+	pm := &PoolManager{cachePath: tmpDir}
 
 	// Three 100-byte "images", oldest first.
 	keys := []string{
@@ -500,7 +500,7 @@ func TestEvictImages_SizeLimit(t *testing.T) {
 // A zero budget disables the size sweep, leaving age as the only bound.
 func TestEvictImages_ZeroSizeDisablesSizeSweep(t *testing.T) {
 	tmpDir := t.TempDir()
-	pm := &PoolManager{poolPath: tmpDir}
+	pm := &PoolManager{cachePath: tmpDir}
 
 	key := strings.Repeat("c", 64)
 	p := filepath.Join(tmpDir, key)
@@ -517,7 +517,7 @@ func TestEvictImages_ZeroSizeDisablesSizeSweep(t *testing.T) {
 // The sweep must actually bring a heavily oversize cache back under the bound.
 func TestEvictImages_ShedsUntilUnderLimit(t *testing.T) {
 	tmpDir := t.TempDir()
-	pm := &PoolManager{poolPath: tmpDir}
+	pm := &PoolManager{cachePath: tmpDir}
 
 	const size = 1000
 	keys := make([]string, 5)

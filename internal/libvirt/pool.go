@@ -45,6 +45,9 @@ type PoolManager struct {
 	conn     *libvirt.Connect
 	poolName string
 	poolPath string
+	// cachePath is where cached and in-flight images are written. It is kept
+	// separate from poolPath, which is the pool's target and not a file store.
+	cachePath string
 }
 
 // poolTargetXML is used to parse the pool's target path out of its XML descriptor.
@@ -80,6 +83,12 @@ func NewPoolManager(cfg config.LibvirtConfig) (*PoolManager, error) {
 		return nil, fmt.Errorf("failed to resolve pool path: %w", err)
 	}
 	pm.poolPath = actualPath
+
+	if cfg.CacheDir == "" {
+		_, _ = conn.Close()
+		return nil, fmt.Errorf("libvirt.cache_dir must be set to a directory on a disk filesystem")
+	}
+	pm.cachePath = cfg.CacheDir
 
 	return pm, nil
 }
@@ -164,11 +173,11 @@ func (pm *PoolManager) AllocateImageFile(cacheKey string) (string, error) {
 		return "", fmt.Errorf("invalid cache key %q: must be 64 lowercase hex characters", cacheKey)
 	}
 
-	if err := os.MkdirAll(pm.poolPath, 0o750); err != nil {
+	if err := os.MkdirAll(pm.cachePath, 0o750); err != nil {
 		return "", fmt.Errorf("failed to create cache directory: %w", err)
 	}
 
-	return filepath.Join(pm.poolPath, cacheKey), nil
+	return filepath.Join(pm.cachePath, cacheKey), nil
 }
 
 // isValidCacheKey reports whether k is a 64-character lowercase hex string.
@@ -188,12 +197,12 @@ func isValidCacheKey(k string) bool {
 // Returns cached image metadata if found, nil if not cached, or error on failure.
 func (pm *PoolManager) CheckCache(cacheKey string) (*ImageCache, error) {
 	// Ensure cache directory exists
-	if err := os.MkdirAll(pm.poolPath, 0o750); err != nil {
+	if err := os.MkdirAll(pm.cachePath, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to access cache directory: %w", err)
 	}
 
 	// Look for checksum file in the cache directory
-	checksumFile := filepath.Join(pm.poolPath, cacheKey+".sha256")
+	checksumFile := filepath.Join(pm.cachePath, cacheKey+".sha256")
 
 	// Check if checksum file exists
 	if _, err := os.Stat(checksumFile); err != nil {
@@ -302,12 +311,12 @@ func (pm *PoolManager) DeleteImage(imagePath string) error {
 // ListCachedImages returns a list of all cached images
 func (pm *PoolManager) ListCachedImages() ([]*ImageCache, error) {
 	// Ensure cache directory exists
-	if err := os.MkdirAll(pm.poolPath, 0o750); err != nil {
+	if err := os.MkdirAll(pm.cachePath, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to access cache directory: %w", err)
 	}
 
 	// Read directory entries
-	entries, err := os.ReadDir(pm.poolPath)
+	entries, err := os.ReadDir(pm.cachePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read cache directory: %w", err)
 	}
@@ -324,10 +333,10 @@ func (pm *PoolManager) ListCachedImages() ([]*ImageCache, error) {
 		cacheKey := strings.TrimSuffix(entry.Name(), ".sha256")
 
 		// Get full path of checksum file
-		checksumFile := filepath.Join(pm.poolPath, entry.Name())
+		checksumFile := filepath.Join(pm.cachePath, entry.Name())
 
 		// Get corresponding image path
-		imagePath := filepath.Join(pm.poolPath, cacheKey)
+		imagePath := filepath.Join(pm.cachePath, cacheKey)
 
 		// Check if image file exists
 		fileInfo, err := os.Stat(imagePath)
@@ -562,7 +571,7 @@ func (pm *PoolManager) EvictImages(maxAge time.Duration, maxSizeBytes int64) (in
 // accompanying .sha256 sidecar. These are abandoned partial downloads: a
 // complete download always has its checksum sidecar written alongside it.
 func (pm *PoolManager) evictSidecarlessImages() (int, error) {
-	entries, err := os.ReadDir(pm.poolPath)
+	entries, err := os.ReadDir(pm.cachePath)
 	if err != nil {
 		return 0, fmt.Errorf("eviction: failed to read cache directory: %w", err)
 	}
@@ -584,7 +593,7 @@ func (pm *PoolManager) evictSidecarlessImages() (int, error) {
 			continue
 		}
 
-		imagePath := filepath.Join(pm.poolPath, name)
+		imagePath := filepath.Join(pm.cachePath, name)
 		sidecarPath := imagePath + ".sha256"
 		if _, err := os.Stat(sidecarPath); err == nil {
 			continue // complete image, leave it to the expiry sweep
