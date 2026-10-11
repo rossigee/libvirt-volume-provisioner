@@ -352,6 +352,28 @@ func (m *Manager) StartJob(ctx context.Context, req types.ProvisionRequest) (str
 	// Detached context — the HTTP request context is cancelled when the response is sent.
 	jobCtx, cancel := context.WithTimeout(context.Background(), m.jobTimeout)
 
+	// One volume gets one active job. The operator re-posts a volume after a
+	// failed or abandoned poll, while the earlier job may still be running; a
+	// second job then downloads and writes the same cache file. Return the
+	// active job instead, checked and inserted under one lock so concurrent
+	// requests cannot both start.
+	m.mu.Lock()
+	for _, existing := range m.jobs {
+		if existing.Request.VolumeName != req.VolumeName {
+			continue
+		}
+		existing.mu.RLock()
+		active := existing.Status == types.StatusPending || existing.Status == types.StatusRunning
+		existing.mu.RUnlock()
+		if active {
+			m.mu.Unlock()
+			cancel()
+			span.SetAttributes(attribute.String("job.deduplicated_from", existing.ID))
+			span.SetStatus(codes.Ok, "active job already exists for volume")
+			return existing.ID, nil
+		}
+	}
+
 	job := &Job{
 		ID:            jobID,
 		CorrelationID: req.CorrelationID,
@@ -362,7 +384,6 @@ func (m *Manager) StartJob(ctx context.Context, req types.ProvisionRequest) (str
 		cancelFunc:    cancel,
 	}
 
-	m.mu.Lock()
 	m.jobs[jobID] = job
 	m.mu.Unlock()
 
