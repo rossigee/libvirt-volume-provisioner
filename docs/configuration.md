@@ -43,6 +43,7 @@ libvirt:
   uri: qemu:///system                                  # libvirt connection URI
   pool: images                                         # Storage pool name
   max_concurrent: 2                                    # Max simultaneous provisioning jobs
+  cache_dir: /var/lib/libvirt-volume-provisioner/cache # Image cache; must be a disk filesystem, not devtmpfs
 
 lvm:
   volume_group: vg0                                    # LVM volume group for VM disks
