@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.7] - 2026-10-11
+
 ### Fixed
 - **Image cache and in-flight downloads were written into the libvirt pool's target path** (`/dev/<vg>` for a
   logical pool). `/dev` is devtmpfs, so every image was held in RAM and counted against the service's memory
