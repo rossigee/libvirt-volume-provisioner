@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A job's status was only ever answered from memory, so a restart made every in-flight job invisible**:
+  `GetJobStatus` read its in-memory registry and nothing else, while `StartJob` had always written the job
+  through to the SQLite store. A restart — an OOM kill, an upgrade — therefore emptied the registry and every
+  subsequent `GET /api/v1/jobs/:id` returned 404 for a job the store still held. A caller cannot tell a lost
+  job from a failed one, so the operator that drives this API sat out its entire retry budget (an hour by
+  default) polling a job that was already on record before concluding it had disappeared; on itx-002 one
+  restart left a volume unprovisioned for the full hour with the reason only visible in logs. `GetJobStatus`
+  now falls back to the store when the job is not in memory. `RecoverJobs` marks jobs that were in progress
+  when the daemon stopped as failed, so the caller is told the work stopped, in seconds instead of an hour.
+  The terminal outcome is unchanged — the volume fails either way — only the latency is. A database that
+  cannot be read is reported as such rather than as a missing job, which is what `ErrJobNotFound` is for.
+- **`MemoryMax=512M` was low enough to be reached, and reaching it cost an hour of provisioning**:
+  on itx-002 the daemon ran for 12h45m and was deactivated with a "513M memory peak"; its restart then
+  emptied the job registry (see above). Peak usage comes from concurrent qcow2 imports. The hosts have
+  ~89GiB of RAM, so the limit is now 2G with `MemoryHigh=1536M`, which still bounds a runaway import.
+- **The AppArmor profile denied operations the provisioner needs**: `lvchange` and `lvremove` were denied
+  reads of `/sys/fs/` on every LVM teardown, which fills the audit log and hides any denial that does
+  matter; that directory listing is now allowed. `/sbin/blockdev` is allowed alongside
+  `/usr/sbin/blockdev`: on a merged-`/usr` host they are separate inodes and AppArmor matches the path that
+  was executed, so a profile that names only one leaves the result dependent on which path the caller
+  resolves to. Observed denials named `/usr/sbin/blockdev`, which this profile already allowed, so the
+  enforced policy on those hosts lagged the file — the package's postinst runs `apparmor_parser -r`, and
+  installing a build that carries these rules replaces it.
+
 ## [0.12.7] - 2026-10-11
 
 ### Fixed

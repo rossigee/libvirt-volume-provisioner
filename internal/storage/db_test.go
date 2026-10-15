@@ -109,6 +109,28 @@ func TestGetJob_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "job not found")
 }
 
+// Callers distinguish a miss from a database that cannot be read, so the miss
+// has to be identifiable rather than only matching on message text.
+func TestGetJob_NotFoundIsIdentifiable(t *testing.T) {
+	store, err := NewStore(":memory:")
+	require.NoError(t, err)
+	defer func() {
+		_ = store.Close() // Ignore error in test
+	}()
+
+	_, err = store.GetJob(context.Background(), "nonexistent")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrJobNotFound)
+
+	closed, err := NewStore(":memory:")
+	require.NoError(t, err)
+	require.NoError(t, closed.Close())
+
+	_, err = closed.GetJob(context.Background(), "nonexistent")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrJobNotFound)
+}
+
 func TestListJobs(t *testing.T) {
 	store, err := NewStore(":memory:")
 	require.NoError(t, err)

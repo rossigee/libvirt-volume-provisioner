@@ -13,6 +13,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// ErrJobNotFound is returned when a job ID is not on record. Callers use it to
+// tell a genuine absent job from a database that could not be read.
+var ErrJobNotFound = errors.New("job not found")
+
 // JobRecord represents a job stored in the database
 type JobRecord struct {
 	ID           string
@@ -204,7 +208,7 @@ func (s *Store) GetJob(ctx context.Context, id string) (*JobRecord, error) {
 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("job not found: %s", id)
+			return nil, fmt.Errorf("%w: %s", ErrJobNotFound, id)
 		}
 		return nil, fmt.Errorf("failed to query job: %w", err)
 	}

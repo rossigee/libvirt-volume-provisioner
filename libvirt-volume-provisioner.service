@@ -29,7 +29,15 @@ DeviceAllow=/dev/mapper/* rwm
 DeviceAllow=/dev/dm-* rwm
 
 # Resource limits
-MemoryMax=512M
+#
+# 512M was not enough. On itx-002 the daemon ran for 12h45m and was deactivated
+# with "513M memory peak"; the restart emptied its in-memory job registry, and
+# every in-flight job then reported "not found" to the operator. Peak usage
+# comes from concurrent qcow2 imports, and a single restart used to stall
+# volume creation for an operator's whole retry budget (an hour). Hosts have
+# ~89GiB of RAM, so 2G still bounds a runaway import.
+MemoryMax=2G
+MemoryHigh=1536M
 LimitNOFILE=65536
 CPUQuota=50%
 
