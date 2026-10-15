@@ -189,6 +189,83 @@ func TestSyncToDatabase_NilProgressAndError(t *testing.T) {
 	assert.Empty(t, got.ErrorMessage)
 }
 
+// -- GetJobStatus: store fallback ---------------------------------------
+
+// After a restart the in-memory registry is empty but the store still holds the
+// job. Reporting "not found" makes the caller poll a job that no longer exists
+// until its retry budget runs out; the store answer is the truthful one.
+func TestGetJobStatus_FallsBackToStoreAfterRestart(t *testing.T) {
+	store := newTestStore(t)
+	m := newTestManager(t, &mockLibvirtPool{}, store)
+
+	now := time.Now().Add(-time.Minute).Truncate(time.Second)
+	require.NoError(t, store.SaveJob(context.Background(), &storage.JobRecord{
+		ID:           "job-after-restart",
+		Status:       string(types.StatusCompleted),
+		RequestJSON:  `{"volume_name":"v"}`,
+		ProgressJSON: `{"stage":"populating","overall_percent":100}`,
+		CreatedAt:    now,
+		UpdatedAt:    now.Add(30 * time.Second),
+	}))
+
+	// The job is deliberately absent from m.jobs: this is the post-restart state.
+	status, err := m.GetJobStatus("job-after-restart")
+	require.NoError(t, err)
+	assert.Equal(t, "job-after-restart", status.JobID)
+	assert.Equal(t, types.StatusCompleted, status.Status)
+	require.NotNil(t, status.Progress)
+	assert.Equal(t, "populating", status.Progress.Stage)
+	assert.Equal(t, now, status.CreatedAt)
+	assert.Equal(t, now.Add(30*time.Second), status.UpdatedAt)
+}
+
+// A job interrupted by a restart is marked failed by RecoverJobs. The caller
+// must see that terminal failure, not a "not found" that it interprets as the
+// job merely being invisible.
+func TestGetJobStatus_RecoveredJobIsReportedAsFailed(t *testing.T) {
+	store := newTestStore(t)
+	m := newTestManager(t, &mockLibvirtPool{}, store)
+
+	require.NoError(t, store.SaveJob(context.Background(), &storage.JobRecord{
+		ID:          "job-interrupted",
+		Status:      string(types.StatusRunning),
+		RequestJSON: `{"volume_name":"v"}`,
+		CreatedAt:   time.Now().Add(-time.Hour),
+		UpdatedAt:   time.Now().Add(-time.Hour),
+	}))
+
+	require.NoError(t, m.RecoverJobs())
+
+	status, err := m.GetJobStatus("job-interrupted")
+	require.NoError(t, err)
+	assert.Equal(t, types.StatusFailed, status.Status)
+	assert.Contains(t, status.Error, "daemon restarted")
+}
+
+// A job that is in neither the registry nor the store is still not found.
+func TestGetJobStatus_UnknownJobIsNotFoundWithStoreConfigured(t *testing.T) {
+	m := newTestManager(t, &mockLibvirtPool{}, newTestStore(t))
+
+	_, err := m.GetJobStatus("never-existed")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+// A store that cannot be read is not the same as a job that does not exist:
+// reporting it as absent would tell the caller the job never existed when the
+// truth is unknown.
+func TestGetJobStatus_StoreFailureIsNotReportedAsNotFound(t *testing.T) {
+	store := newTestStore(t)
+	m := newTestManager(t, &mockLibvirtPool{}, store)
+
+	require.NoError(t, store.Close())
+
+	_, err := m.GetJobStatus("any-job")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "not found")
+	assert.Contains(t, err.Error(), "from store")
+}
+
 // -- ListCachedImages ---------------------------------------------------
 
 func TestListCachedImages_NilPoolIsAnError(t *testing.T) {

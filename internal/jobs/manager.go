@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -402,7 +403,17 @@ func (m *Manager) GetJobStatus(jobID string) (*types.StatusResponse, error) {
 	m.mu.RUnlock()
 
 	if !exists {
-		return nil, fmt.Errorf("job not found: %s", jobID)
+		// The registry is in memory, so a restart (an OOM kill, an upgrade)
+		// loses every in-flight job and a poll for one reports "not found" even
+		// though the job is still on record in the store. A caller polling a job
+		// ID cannot tell a lost job from a failed one, and the operator driving
+		// this API waits out its entire retry budget -- an hour by default --
+		// before concluding the job disappeared. Answer from the durable store
+		// instead: RecoverJobs marks jobs that were in progress when the daemon
+		// stopped as failed, so the caller is told immediately that the work
+		// stopped rather than an hour later. The terminal outcome is the same
+		// (the operator fails the volume either way); only the latency differs.
+		return m.storedJobStatus(jobID)
 	}
 
 	job.mu.RLock()
@@ -423,6 +434,48 @@ func (m *Manager) GetJobStatus(jobID string) (*types.StatusResponse, error) {
 		cacheHit := job.CacheHit
 		response.CacheHit = &cacheHit
 		response.ImagePath = job.ImagePath
+	}
+
+	return response, nil
+}
+
+// storedJobStatus builds a status response from the durable job store. It backs
+// GetJobStatus when the job is not in the in-memory registry, which is the case
+// after the daemon has restarted. Fields that only live in memory for the
+// current process (the correlation ID, the cache hit and the image path) are
+// not persisted, so they are absent here.
+func (m *Manager) storedJobStatus(jobID string) (*types.StatusResponse, error) {
+	if m.store == nil {
+		return nil, fmt.Errorf("job not found: %s", jobID)
+	}
+
+	record, err := m.store.GetJob(context.Background(), jobID)
+	if err != nil {
+		// A miss is a genuine "not found". A database that cannot be read is
+		// not: reporting it as absent would tell the caller the job never
+		// existed when the truth is unknown.
+		if errors.Is(err, storage.ErrJobNotFound) {
+			return nil, fmt.Errorf("job not found: %s", jobID)
+		}
+		return nil, fmt.Errorf("failed to read job %s from store: %w", jobID, err)
+	}
+
+	response := &types.StatusResponse{
+		JobID:     record.ID,
+		Status:    types.JobStatus(record.Status),
+		CreatedAt: record.CreatedAt,
+		UpdatedAt: record.UpdatedAt,
+	}
+
+	if record.ProgressJSON != "" {
+		var progress types.ProgressInfo
+		if err := json.Unmarshal([]byte(record.ProgressJSON), &progress); err == nil {
+			response.Progress = &progress
+		}
+	}
+
+	if record.ErrorMessage != "" {
+		response.Error = record.ErrorMessage
 	}
 
 	return response, nil

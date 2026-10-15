@@ -51,6 +51,11 @@ profile libvirt-volume-provisioner /usr/bin/libvirt-volume-provisioner flags=(at
   /sys/devices/virtual/dmi/** r,
   /sys/fs/cgroup/** r,
   /sys/fs/cgroup/system.slice/libvirt-volume-provisioner.service/** r,
+  # lvchange and lvremove enumerate /sys/fs before deciding which kernel
+  # interfaces they can use. Denying the listing does not stop them, but it
+  # fills the audit log with denials on every LVM teardown, which hides the
+  # denials that do matter.
+  /sys/fs/ r,
   /sys/devices/** r,
   /sys/dev/block/ r,
   owner /proc/sys/net/core/somaxconn r,
@@ -137,6 +142,12 @@ profile libvirt-volume-provisioner /usr/bin/libvirt-volume-provisioner flags=(at
   /usr/sbin/lvdisplay ixr,
   /usr/sbin/lvscan ixr,
   /usr/sbin/blockdev ixr,
+  # On a merged-/usr host /sbin/blockdev and /usr/sbin/blockdev are separate
+  # inodes, and the profile matches on the path that was executed. Allowing
+  # only the /usr path makes the result depend on which one the caller resolves
+  # to, which is how /usr/sbin/blockdev ended up denied in enforce mode while
+  # the rule for it was already present in this profile.
+  /sbin/blockdev ixr,
   /bin/dd ixr,
   /sbin/blkid ixr,
   /usr/bin/blkid ixr,
