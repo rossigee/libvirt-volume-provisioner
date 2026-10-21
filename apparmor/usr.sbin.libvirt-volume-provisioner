@@ -105,6 +105,14 @@ profile libvirt-volume-provisioner /usr/bin/libvirt-volume-provisioner flags=(at
   /run/lvm/** rwk,
   /run/lock/lvm/** rwk,
 
+  # blkid caches its probe results in /run/blkid/blkid.tab. The provisioner
+  # runs blkid to detect a device before converting it, and the cache write is
+  # denied, so every provisioning job logs a denial. The denials are the same
+  # class of noise as the /sys/fs/ listing below: they bury the denials that
+  # do matter.
+  /run/blkid/ rwml,
+  /run/blkid/** rwml,
+
   # Device nodes - vgs/lvs must enumerate /dev to locate the VG
   /dev/mapper/** rw,
   /dev/mapper/control rw,
