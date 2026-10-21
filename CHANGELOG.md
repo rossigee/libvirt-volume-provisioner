@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   v0.61.0, which is past the v0.60.0 that fixes all five.
 - **The toolchain was built against a Go standard library with a known advisory**: GO-2026-6809 requires
   distrusting intermediate certificates issued by a compromised CA, and is fixed in go1.27.3. The provisioner
-  verifies the TLS certificate of the MinIO it pulls images from, so the build toolchain is raised to 1.27.3.
+  verifies the TLS certificate of the MinIO it pulls images from, so the build toolchain is raised to 1.27.3
+  across `go.mod`, the `golang:1.27.3-alpine` builder images and the CI and release workflows.
 
 ### Fixed
 - **A job's status was only ever answered from memory, so a restart made every in-flight job invisible**:
