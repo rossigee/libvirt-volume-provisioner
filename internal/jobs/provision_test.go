@@ -141,6 +141,54 @@ func provisionReq() types.ProvisionRequest {
 	}
 }
 
+// -- ProvisionVolume: in-use guard ------------------------------------
+
+// A volume that a running domain holds must not be populated: the image is
+// written into the block device, so it lands on the guest's mounted
+// filesystem and corrupts it. The job has to fail, and it must fail before
+// the volume is created so that the failure path cannot delete the volume the
+// running domain is using.
+func TestProvisionVolume_RefusesVolumeUsedByRunningDomain(t *testing.T) {
+	lvmMock := &fakeLVM{}
+	minioMock := &fakeMinio{content: []byte("image-bytes")}
+	m := newProvisioningManager(t, lvmMock, minioMock)
+	m.libvirtPool = &mockLibvirtPool{
+		cacheDir:    t.TempDir(),
+		inUseBy:     "runner-v4",
+		inUseDomain: "runner-v4-domain",
+	}
+
+	job := &Job{ID: "job-in-use", Request: provisionReq(), CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	err := m.ProvisionVolume(context.Background(), job)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "in use by running domain runner-v4-domain")
+
+	calls := lvmMock.snapshot()
+	assert.Equal(t, 0, calls.create, "no volume may be created for a volume a running domain holds")
+	assert.Equal(t, 0, calls.populate, "no volume may be populated while a running domain holds it")
+	assert.Equal(t, 0, calls.delete, "the volume must not be deleted either")
+}
+
+// A failure of the in-use check itself must not block provisioning: the check
+// is a safety net, not a precondition.
+func TestProvisionVolume_ContinuesWhenInUseCheckFails(t *testing.T) {
+	lvmMock := &fakeLVM{}
+	minioMock := &fakeMinio{content: []byte("image-bytes")}
+	m := newProvisioningManager(t, lvmMock, minioMock)
+	m.libvirtPool = &mockLibvirtPool{
+		cacheDir: t.TempDir(),
+		inUseErr: errors.New("libvirt is unavailable"),
+	}
+
+	job := &Job{ID: "job-check-fails", Request: provisionReq(), CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	require.NoError(t, m.ProvisionVolume(context.Background(), job))
+
+	calls := lvmMock.snapshot()
+	assert.Equal(t, 1, calls.create)
+	assert.Equal(t, 1, calls.populate)
+}
+
 // -- DeleteVolume -------------------------------------------------------
 
 func TestDeleteVolume_DelegatesToLVM(t *testing.T) {
