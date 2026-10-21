@@ -13,7 +13,7 @@ permissions:
   packages: read
 
 env:
-  GO_VERSION: '1.27.1'
+  GO_VERSION: '1.27.3'
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:

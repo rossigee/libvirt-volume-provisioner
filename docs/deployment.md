@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: actions/setup-go@v4
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.3'
       - run: make test
       - run: make lint
 ```

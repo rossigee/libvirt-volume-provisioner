@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.8] - 2026-10-21
+
+### Security
+- **`golang.org/x/net` was affected by five published advisories** (GO-2026-6610, GO-2026-6603, GO-2026-6611,
+  GO-2026-6612 and GO-2026-6617) in the HTTP/2 code the provisioner's API server uses. `x/net` is raised to
+  v0.61.0, which is past the v0.60.0 that fixes all five.
+- **The toolchain was built against a Go standard library with a known advisory**: GO-2026-6809 requires
+  distrusting intermediate certificates issued by a compromised CA, and is fixed in go1.27.3. The provisioner
+  verifies the TLS certificate of the MinIO it pulls images from, so the build toolchain is raised to 1.27.3
+  across `go.mod`, the `golang:1.27.3-alpine` builder images and the CI and release workflows.
+
 ### Fixed
 - **A job's status was only ever answered from memory, so a restart made every in-flight job invisible**:
   `GetJobStatus` read its in-memory registry and nothing else, while `StartJob` had always written the job
@@ -30,7 +41,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was executed, so a profile that names only one leaves the result dependent on which path the caller
   resolves to. Observed denials named `/usr/sbin/blockdev`, which this profile already allowed, so the
   enforced policy on those hosts lagged the file — the package's postinst runs `apparmor_parser -r`, and
-  installing a build that carries these rules replaces it.
+  installing a build that carries these rules replaces it. `blkid` was likewise denied its probe cache at
+  `/run/blkid/blkid.tab`, so every provisioning job logged a denial; the cache is now allowed to be written.
+- **A second job was started for a volume that already had one running**: the operator re-posts a volume
+  after a failed or abandoned poll while the earlier job may still be running, and each new job downloaded
+  and wrote the same cache file. `StartJob` now returns the pending or running job for the same volume name,
+  and checks and inserts under one lock so concurrent requests cannot both start a job.
+- **A job reported success after its image failed to checksum**: a checksum error after the download was
+  logged as a warning, the cache entry was skipped, and the job still reported "Image downloaded and cached"
+  with an empty checksum. The error is now returned and the file deleted. Jobs for the same image share one
+  cache file, so two jobs could download into it at once and a failed job's rollback could delete a file
+  another job was still writing; cache work is now serialised per cache key so jobs for one image run one at
+  a time.
 
 ## [0.12.7] - 2026-10-11
 
