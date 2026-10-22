@@ -122,6 +122,11 @@ type LibvirtPool interface {
 	ListCachedImages() ([]*libvirt.ImageCache, error)
 	EvictExpiredImages(maxAge time.Duration) (int, error)
 	EvictImages(maxAge time.Duration, maxSizeBytes int64) (int, error)
+	// FindRunningDomainUsingVolume reports a running domain that has the named
+	// volume attached, if any. The provisioner writes the image directly into
+	// the block device, so a volume that a running guest holds must not be
+	// populated: the write corrupts the guest's filesystem.
+	FindRunningDomainUsingVolume(volumeName string) (string, bool, error)
 }
 
 // MinioClient is the interface Manager uses to interact with MinIO.
@@ -648,6 +653,23 @@ func (m *Manager) ProvisionVolume(ctx context.Context, job *Job) error {
 	}
 	imageSpan.SetAttributes(attribute.String("image.path", imagePath))
 	imageSpan.SetStatus(codes.Ok, "image acquired successfully")
+
+	// Refuse to populate a volume that a running guest holds.
+	//
+	// The image is written straight into the block device. If a domain is
+	// running on that device, the write lands on a mounted filesystem and
+	// corrupts it: the guest comes back with a read-only root filesystem or a
+	// torn one. This is not hypothetical - a boot volume was repopulated while
+	// its guest was still running and the guest's filesystem was destroyed.
+	//
+	// The check runs before the volume is created so that the failure path
+	// cannot delete a volume the running domain is using.
+	if domain, inUse, err := m.libvirtPool.FindRunningDomainUsingVolume(req.VolumeName); err != nil {
+		logrus.WithError(err).WithField("volume_name", req.VolumeName).
+			Warn("Could not determine whether the volume is in use by a running domain; continuing")
+	} else if inUse {
+		return fmt.Errorf("volume %s is in use by running domain %s; refusing to populate it", req.VolumeName, domain)
+	}
 
 	job.mu.RLock()
 	cacheHit := job.CacheHit

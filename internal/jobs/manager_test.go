@@ -29,6 +29,12 @@ type mockLibvirtPool struct {
 	deletedPaths []string
 	cacheDir     string // if set, AllocateImageFile creates files here
 	allocateErr  error
+	// inUseBy is the volume name a running domain is holding, if any.
+	inUseBy string
+	// inUseDomain is the name of that domain.
+	inUseDomain string
+	// inUseErr is returned by the in-use check when set.
+	inUseErr error
 }
 
 //nolint:nilnil // matches real CheckCache "not found" semantic
@@ -59,6 +65,18 @@ func (m *mockLibvirtPool) EvictImages(_ time.Duration, _ int64) (int, error) {
 
 func (m *mockLibvirtPool) EvictExpiredImages(_ time.Duration) (int, error) {
 	return m.evictedCount, m.evictErr
+}
+
+// FindRunningDomainUsingVolume reports the domain the mock was told to hold
+// the volume, if any.
+func (m *mockLibvirtPool) FindRunningDomainUsingVolume(volumeName string) (string, bool, error) {
+	if m.inUseErr != nil {
+		return "", false, m.inUseErr
+	}
+	if m.inUseBy != "" && m.inUseBy == volumeName {
+		return m.inUseDomain, true, nil
+	}
+	return "", false, nil
 }
 
 // mockMinioClient implements MinioClient for unit tests.
@@ -1130,6 +1148,10 @@ func (c *callbackLibvirtPool) EvictImages(_ time.Duration, _ int64) (int, error)
 
 func (c *callbackLibvirtPool) EvictExpiredImages(_ time.Duration) (int, error) {
 	return c.onEvict()
+}
+
+func (c *callbackLibvirtPool) FindRunningDomainUsingVolume(_ string) (string, bool, error) {
+	return "", false, nil
 }
 
 // TestGetJobCacheInfo tests cache info retrieval
